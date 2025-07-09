@@ -2,6 +2,7 @@ import lightning as pl
 from torch.optim import AdamW
 from transformers import GPT2Config, GPT2LMHeadModel, get_linear_schedule_with_warmup, AutoModelForCausalLM, AutoConfig
 import torch
+from utils import CONTEXT_SIZE
 
 class MidiGPT2(pl.LightningModule):
     def __init__(self, tokenizer, dataloader, lr=5e-5, warmup_steps=500):
@@ -10,8 +11,8 @@ class MidiGPT2(pl.LightningModule):
 
         config = GPT2Config(
             vocab_size=tokenizer.vocab_size,
-            n_positions=8192,
-            n_ctx=8192,
+            n_positions=CONTEXT_SIZE,
+            n_ctx=CONTEXT_SIZE,
             n_embd=512,
             n_layer=6,
             n_head=8,
@@ -51,6 +52,22 @@ class MidiGPT2(pl.LightningModule):
         )
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
 
+    def load_checkpoint_expanding_pos_emb(self, checkpoint_path):
+        """Load checkpoint and expand positional embeddings if needed"""
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        state_dict = checkpoint["state_dict"]
+
+        model_pos_emb = self.model.transformer.wpe.weight  # shape: [8192, dim]
+        old_pos_emb = state_dict["model.transformer.wpe.weight"]  # from checkpoint
+
+        if old_pos_emb.shape[0] < model_pos_emb.shape[0]:
+            print(f"Expanding position embeddings: {old_pos_emb.shape[0]} → {model_pos_emb.shape[0]}")
+            model_pos_emb.data[:old_pos_emb.shape[0]] = old_pos_emb
+            state_dict["model.transformer.wpe.weight"] = model_pos_emb
+        else:
+            print(f"Loading position embeddings without resizing.")
+
+        self.load_state_dict(state_dict, strict=False)
 
 class MidiQwen(pl.LightningModule):
     def __init__(self, tokenizer, dataloader, lr=5e-5, warmup_steps=500):
@@ -63,7 +80,7 @@ class MidiQwen(pl.LightningModule):
         config.num_hidden_layers = 12  # 28
         config.num_attention_heads = 8  # 16
         config.intermediate_size = 2048  # 3072
-        config.max_position_embeddings = 1024
+        config.max_position_embeddings = CONTEXT_SIZE
         config.bos_token_id = tokenizer["BOS_None"]
         config.eos_token_id = tokenizer["EOS_None"]
         config.pad_token_id = tokenizer.pad_token_id

@@ -77,8 +77,8 @@ def chuck():
         files_paths=midi_paths,
         tokenizer=tokenizer,
         save_dir=dataset_chunks_dir,
-        max_seq_len=1024,
-        num_overlap_bars=12
+        max_seq_len=utils.CONTEXT_SIZE,
+        num_overlap_bars=1
     )
 
 if __name__ == "__main__":

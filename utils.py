@@ -1,5 +1,6 @@
 from miditok import TokenizerConfig, PerTok
 
+CONTEXT_SIZE = 8192
 
 def get_tokenizer(load=True):
     config = TokenizerConfig(

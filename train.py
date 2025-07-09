@@ -8,7 +8,7 @@ from miditok.pytorch_data import DatasetMIDI, DataCollator
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 import lightning as pl
-
+from utils import CONTEXT_SIZE
 import utils
 from model import MidiGPT2, MidiQwen
 
@@ -30,23 +30,23 @@ if __name__ == "__main__":
     train_dataset = DatasetMIDI(
         files_paths=train_files,
         tokenizer=tokenizer,
-        max_seq_len=1024,
+        max_seq_len=utils.CONTEXT_SIZE,
         bos_token_id=tokenizer["BOS_None"],
         eos_token_id=tokenizer["EOS_None"],
     )
     train_collator = DataCollator(tokenizer.pad_token_id, copy_inputs_as_labels=True)
-    train_loader = DataLoader(train_dataset, batch_size=32, collate_fn=train_collator, num_workers=19)
+    train_loader = DataLoader(train_dataset, batch_size=8, collate_fn=train_collator, num_workers=19)
 
     # --- VAL DATASET ---
     val_dataset = DatasetMIDI(
         files_paths=val_files,
         tokenizer=tokenizer,
-        max_seq_len=1024,
+        max_seq_len=CONTEXT_SIZE,
         bos_token_id=tokenizer["BOS_None"],
         eos_token_id=tokenizer["EOS_None"],
     )
     val_collator = DataCollator(tokenizer.pad_token_id, copy_inputs_as_labels=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, collate_fn=val_collator, num_workers=19)
+    val_loader = DataLoader(val_dataset, batch_size=8, collate_fn=val_collator, num_workers=19)
 
     # === WANDB LOGGER ===
     wandb_logger = WandbLogger(project="symbolic-music-generation", log_model=True)
@@ -62,6 +62,7 @@ if __name__ == "__main__":
 
     # === TRAIN ===
     model = MidiGPT2(tokenizer, train_loader)
+    model.load_checkpoint_expanding_pos_emb("checkpoints/pertok-pretrain-final.ckpt")
 
     trainer = pl.Trainer(
         max_epochs=EPOCHS,
