@@ -78,7 +78,7 @@ def chunk():
         tokenizer=tokenizer,
         save_dir=dataset_chunks_dir,
         max_seq_len=utils.CONTEXT_SIZE,
-        num_overlap_bars=16
+        num_overlap_bars=2
     )
 
 if __name__ == "__main__":
