@@ -20,7 +20,7 @@ files_paths = list(midis)
 tokenizer.train(vocab_size=30000, files_paths=files_paths)
 tokenizer.save(Path(project_dir, "tokenizer.json"))
 # And pushing it to the Hugging Face hub (you can download it back with .from_pretrained)
-tokenizer.push_to_hub("xingjianll/midi-tokenizer", private=False, token=os.environ["HF_TOKEN"])
+tokenizer.push_to_hub("xingjianll/midi-tokenizer-v2", private=False, token=os.environ["HF_TOKEN"])
 
 
 if __name__ == "__main__":

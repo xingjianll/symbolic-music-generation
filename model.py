@@ -77,9 +77,9 @@ class MidiQwen(pl.LightningModule):
         self.tokenizer = tokenizer
         config = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B", trust_remote_code=True)
         config.hidden_size = 512  # 1024
-        config.num_hidden_layers = 12  # 28
+        config.num_hidden_layers = 14  # 28
         config.num_attention_heads = 8  # 16
-        config.intermediate_size = 2048  # 3072
+        config.intermediate_size = 1024  # 3072
         config.max_position_embeddings = CONTEXT_SIZE
         config.bos_token_id = tokenizer["BOS_None"]
         config.eos_token_id = tokenizer["EOS_None"]
