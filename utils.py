@@ -1,6 +1,6 @@
 from miditok import TokenizerConfig, PerTok
 
-CONTEXT_SIZE = 8192
+CONTEXT_SIZE = 4096
 
 def get_tokenizer(load=True):
     config = TokenizerConfig(
@@ -21,6 +21,6 @@ def get_tokenizer(load=True):
     )
     tokenizer = PerTok(config)
     if load:
-        tokenizer.from_pretrained("xingjianll/midi-tokenizer")
+        tokenizer.from_pretrained("xingjianll/midi-tokenizer-v2")
 
     return tokenizer

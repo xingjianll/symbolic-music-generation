@@ -13,7 +13,7 @@ import utils
 from model import MidiGPT2, MidiQwen
 
 
-EPOCHS = 16
+EPOCHS = 32
 
 if __name__ == "__main__":
     project_dir = Path(__file__).resolve().parent
@@ -35,7 +35,7 @@ if __name__ == "__main__":
         eos_token_id=tokenizer["EOS_None"],
     )
     train_collator = DataCollator(tokenizer.pad_token_id, copy_inputs_as_labels=True)
-    train_loader = DataLoader(train_dataset, batch_size=8, collate_fn=train_collator, num_workers=19)
+    train_loader = DataLoader(train_dataset, batch_size=4, collate_fn=train_collator, num_workers=19)
 
     # --- VAL DATASET ---
     val_dataset = DatasetMIDI(
@@ -46,7 +46,7 @@ if __name__ == "__main__":
         eos_token_id=tokenizer["EOS_None"],
     )
     val_collator = DataCollator(tokenizer.pad_token_id, copy_inputs_as_labels=True)
-    val_loader = DataLoader(val_dataset, batch_size=8, collate_fn=val_collator, num_workers=19)
+    val_loader = DataLoader(val_dataset, batch_size=4, collate_fn=val_collator, num_workers=19)
 
     # === WANDB LOGGER ===
     wandb_logger = WandbLogger(project="symbolic-music-generation", log_model=True)
@@ -61,9 +61,8 @@ if __name__ == "__main__":
     )
 
     # === TRAIN ===
-    model = MidiGPT2(tokenizer, train_loader)
-    model.load_checkpoint_expanding_pos_emb("checkpoints/pertok-pretrain-final.ckpt")
-
+    model = MidiQwen(tokenizer, train_loader)
+    # model.load_checkpoint_expanding_pos_emb("checkpoints/last.ckpt")
     trainer = pl.Trainer(
         max_epochs=EPOCHS,
         logger=wandb_logger,
@@ -71,6 +70,7 @@ if __name__ == "__main__":
         log_every_n_steps=1,
         accelerator="auto",
         callbacks=[checkpoint_callback],
+        precision="16-mixed",  # 👈 Use this for NVIDIA A100 (recommended)
     )
 
     trainer.fit(model, train_loader, val_loader)

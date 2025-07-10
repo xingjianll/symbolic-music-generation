@@ -65,7 +65,7 @@ def transpose():
     for score in scores:
         score[0].dump_midi(midi_dir.joinpath(score[1]))
 
-def chuck():
+def chunk():
     project_dir = Path(__file__).resolve().parent
     midi_dir = project_dir.joinpath("data/midi")
     midi_paths = list(midi_dir.glob("**/*.mid"))
@@ -78,8 +78,8 @@ def chuck():
         tokenizer=tokenizer,
         save_dir=dataset_chunks_dir,
         max_seq_len=utils.CONTEXT_SIZE,
-        num_overlap_bars=1
+        num_overlap_bars=16
     )
 
 if __name__ == "__main__":
-    chuck()
+    chunk()
