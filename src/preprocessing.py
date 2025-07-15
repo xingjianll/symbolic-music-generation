@@ -5,7 +5,6 @@ import mido
 from dotenv import load_dotenv
 import os
 
-from miditok import TokenizerConfig, REMI
 from miditok.utils import split_files_for_training
 from mido import MidiFile
 from symusic import Score
@@ -17,9 +16,9 @@ load_dotenv()
 
 def collect():
     raw_data_dir = os.environ.get("RAW_DATA_DIR")
-    root_dir = os.path.join("./data", raw_data_dir)
+    root_dir = os.path.join("../data", raw_data_dir)
 
-    dest_dir = os.path.join("./data", "raw_midi")
+    dest_dir = os.path.join("../data", "raw_midi")
 
     for dir in os.listdir(root_dir):
         subdir_path = os.path.join(root_dir, dir)
@@ -40,8 +39,8 @@ def collect():
 
 
 def merge_tracks():
-    raw_midi_dir = os.path.join("./data", "raw_midi")
-    dest_dir = os.path.join("./data", "midi")
+    raw_midi_dir = os.path.join("../data", "raw_midi")
+    dest_dir = os.path.join("../data", "midi")
     for file in os.listdir(raw_midi_dir):
         midi_path = os.path.join(raw_midi_dir, file)
         mid = MidiFile(midi_path)

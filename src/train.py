@@ -1,17 +1,14 @@
 from pathlib import Path
 
-import torch
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
-from miditok import TokenizerConfig, REMI
 from miditok.pytorch_data import DatasetMIDI, DataCollator
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 import lightning as pl
 from utils import CONTEXT_SIZE
 import utils
-from model import MidiGPT2, MidiQwen
-
+from src.model import MidiGPT2
 
 EPOCHS = 32
 

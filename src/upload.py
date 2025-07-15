@@ -5,8 +5,8 @@ from huggingface_hub import create_repo, upload_folder
 
 # Upload the folder
 upload_folder(
-    folder_path="midi-gpt2",
-    path_in_repo=".",
+    folder_path="../midi-gpt2",
+    path_in_repo="..",
     repo_id="xingjianll/midi-gpt2",
     repo_type="model"
 )
