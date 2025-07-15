@@ -10,8 +10,8 @@ class MidiGPT2(pl.LightningModule):
 
         config = GPT2Config(
             vocab_size=tokenizer.vocab_size,
-            n_positions=1024,
-            n_ctx=1024,
+            n_positions=8192,
+            n_ctx=8192,
             n_embd=512,
             n_layer=6,
             n_head=8,
