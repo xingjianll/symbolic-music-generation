@@ -8,46 +8,57 @@ import os
 from miditok.utils import split_files_for_training
 from mido import MidiFile
 from symusic import Score
+from symusic.types import Track
 
 import utils
 
 load_dotenv()
 
+project_dir = Path(__file__).resolve().parents[1]
+data_dir = project_dir / "data"
 
-def collect():
-    raw_data_dir = os.environ.get("RAW_DATA_DIR")
-    root_dir = os.path.join("../data", raw_data_dir)
 
-    dest_dir = os.path.join("../data", "raw_midi")
+def split():
+    raw_data_dir = data_dir / os.environ.get("RAW_DATA_DIR")
 
-    for dir in os.listdir(root_dir):
-        subdir_path = os.path.join(root_dir, dir)
+    single_track_dir = data_dir / "single_track"
+    duo_track_dir = data_dir / "duo_track"
 
-        if not os.path.isdir(subdir_path):
-            continue
-
-        files = os.listdir(subdir_path)
-        for file in files:
-            if not file.endswith(".mid"):
-                continue
-
-            source_file = os.path.join(subdir_path, file)
-            dest_file = os.path.join(dest_dir, file)
-
-            shutil.copy(source_file, dest_file)
-            print(f"Copied: {source_file} -> {dest_file}")
+    for file in os.listdir(raw_data_dir):
+        print(file)
+        if file.endswith(".mid"):
+            score = Score.from_file(os.path.join(raw_data_dir, file))
+            a: Track = score.tracks[0]
+            # if len(score.tracks) > 1:
+            #     source_file = raw_data_dir / file
+            #     dest_file = duo_track_dir / file
+            #     shutil.copy(source_file, dest_file)
+            if len(score.tracks) == 1:
+                source_file = raw_data_dir / file
+                dest_file = single_track_dir / file
+                shutil.copy(source_file, dest_file)
 
 
 def merge_tracks():
-    raw_midi_dir = os.path.join("../data", "raw_midi")
-    dest_dir = os.path.join("../data", "midi")
+    raw_midi_dir = data_dir / os.environ.get("RAW_DATA_DIR2")
+    dest_dir = data_dir / "single_track"
     for file in os.listdir(raw_midi_dir):
         midi_path = os.path.join(raw_midi_dir, file)
+        print(midi_path)
         mid = MidiFile(midi_path)
         track = mido.merge_tracks(mid.tracks)
         del mid.tracks[:]
         mid.tracks.append(track)
         mid.save(os.path.join(dest_dir, file))
+
+
+def simplify():
+    single_track_dir = data_dir / 'single_track'
+    dest_dir = data_dir / "single_track"
+    for file in os.listdir(single_track_dir):
+        score = Score(single_track_dir / file)
+        a: Track = score.tracks[0]
+        for
 
 def transpose():
     project_dir = Path(__file__).resolve().parent
@@ -81,4 +92,4 @@ def chunk():
     )
 
 if __name__ == "__main__":
-    chunk()
+    merge_tracks()
