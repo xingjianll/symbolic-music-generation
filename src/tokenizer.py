@@ -37,7 +37,7 @@ def get_tokenizer(load=True, version='v1'):
             num_velocities=8,
             use_velocities=True,
             use_chords=False,
-            use_rests=True,
+            use_rests=False,
             use_tempos=True,
             use_time_signatures=True,
             use_sustain_pedals=False,
@@ -52,7 +52,8 @@ def get_tokenizer(load=True, version='v1'):
                 4: [1, 2, 3, 4, 5, 6, 7],  # 1/4 through 7/4
                 8: [3, 5, 6, 7, 9, 10, 12],  # common compound meters
                 2: [2],  # 2/2 (alla breve or cut time)
-                16: [3, 5, 6, 7, 9, 11],  # more complex compound time
+                16: [3, 5, 6, 7, 9, 11, 19],
+                32: [33] # more complex compound time
             }
         )
         tokenizer = REMI(config)
@@ -68,12 +69,11 @@ if __name__ == "__main__":
     tokenizer = get_tokenizer(load=False, version='v2')
 
     # Train the tokenizer with Byte Pair Encoding (BPE)
-    project_dir = Path(__file__).resolve().parent
-    midi_dir = project_dir.joinpath("data/midi")
+    project_dir = Path(__file__).resolve().parent.parent
+    midi_dir = project_dir.joinpath("data/single_track_combined")
     midis = midi_dir.glob("**/*.mid")
-    for mid in midis:
-        print(mid)
     files_paths = list(midis)
+    print(files_paths)
     tokenizer.train(vocab_size=30000, files_paths=files_paths)
     tokenizer.save(Path(project_dir, "tokenizer.json"))
     tokenizer.push_to_hub("xingjianll/midi-tokenizer-v2", private=False, token=os.environ["HF_TOKEN"])
