@@ -8,8 +8,8 @@ from torch.utils.data import DataLoader
 import lightning as pl
 
 from src.tokenizer import get_tokenizer
-from utils import CONTEXT_SIZE
-import utils
+from src.utils import CONTEXT_SIZE
+import src.utils
 from src.model import MidiGPT2, MidiQwen
 
 EPOCHS = 32
@@ -27,7 +27,7 @@ if __name__ == "__main__":
     train_dataset = DatasetMIDI(
         files_paths=train_files,
         tokenizer=tokenizer,
-        max_seq_len=utils.CONTEXT_SIZE,
+        max_seq_len=src.utils.CONTEXT_SIZE,
         bos_token_id=tokenizer["BOS_None"],
         eos_token_id=tokenizer["EOS_None"],
     )
@@ -66,7 +66,8 @@ if __name__ == "__main__":
         gradient_clip_val=1.0,
         log_every_n_steps=1,
         accelerator="auto",
-        callbacks=[checkpoint_callback]
+        callbacks=[checkpoint_callback],
+        val_check_interval=100
     )
 
     trainer.fit(model, train_loader, val_loader)

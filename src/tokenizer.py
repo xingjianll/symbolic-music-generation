@@ -4,7 +4,7 @@ from pathlib import Path
 import dotenv
 from miditok import TokenizerConfig, PerTok, REMI
 
-import utils
+import src.utils
 
 
 def get_tokenizer(load=True, version='v1'):

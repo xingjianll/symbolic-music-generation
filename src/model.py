@@ -2,7 +2,7 @@ import lightning as pl
 from torch import nn
 from transformers import GPT2Config, GPT2LMHeadModel, AutoModelForCausalLM, AutoConfig
 import torch
-from utils import CONTEXT_SIZE
+from src.utils import CONTEXT_SIZE
 
 
 # Copied from https://github.com/EleutherAI/aria/blob/main/aria/training/train.py
@@ -82,7 +82,7 @@ class MidiGPT2(pl.LightningModule):
         return val_loss
 
     def configure_optimizers(self):
-        from train import EPOCHS
+        from src.train import EPOCHS
 
         steps_per_epoch = len(self.dataloader)
         optimizer, scheduler = _get_optim(
@@ -122,11 +122,11 @@ class MidiQwen(pl.LightningModule):
 
         self.tokenizer = tokenizer
         config = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B", trust_remote_code=True)
-        config.hidden_size = 384  # 1024
-        config.num_hidden_layers = 8  # 28
-        config.num_attention_heads = 6  # 16
-        config.num_key_value_heads = 6
-        config.intermediate_size = 768  # 3072
+        config.hidden_size = 512  # 1024
+        config.num_hidden_layers = 14  # 28
+        config.num_attention_heads = 8  # 16
+        config.num_key_value_heads = 8
+        config.intermediate_size = 2048  # 3072
         config.max_position_embeddings = CONTEXT_SIZE
         config.bos_token_id = tokenizer["BOS_None"]
         config.eos_token_id = tokenizer["EOS_None"]
@@ -153,7 +153,7 @@ class MidiQwen(pl.LightningModule):
         return val_loss
 
     def configure_optimizers(self):
-        from train import EPOCHS
+        from src.train import EPOCHS
 
         steps_per_epoch = len(self.dataloader)
         optimizer, scheduler = _get_optim(
