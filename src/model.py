@@ -1,11 +1,51 @@
 import lightning as pl
-from torch.optim import AdamW
-from transformers import GPT2Config, GPT2LMHeadModel, get_linear_schedule_with_warmup, AutoModelForCausalLM, AutoConfig
+from torch import nn
+from transformers import GPT2Config, GPT2LMHeadModel, AutoModelForCausalLM, AutoConfig
 import torch
 from utils import CONTEXT_SIZE
 
+
+# Copied from https://github.com/EleutherAI/aria/blob/main/aria/training/train.py
+def _get_optim(
+    lr: float,
+    model: nn.Module,
+    num_epochs: int,
+    steps_per_epoch: int,
+    warmup: int = 100,
+    end_ratio: float = 0.1,
+):
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=lr,
+        weight_decay=0.1,
+        betas=(0.9, 0.95),
+        eps=1e-5,
+    )
+
+    warmup_lrs = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=0.000001,
+        end_factor=1,
+        total_iters=warmup,
+    )
+    linear_decay_lrs = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=1,
+        end_factor=end_ratio,
+        total_iters=(num_epochs * steps_per_epoch) - warmup,
+    )
+
+    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_lrs, linear_decay_lrs],
+        milestones=[warmup],
+    )
+
+    return optimizer, lr_scheduler
+
+
 class MidiGPT2(pl.LightningModule):
-    def __init__(self, tokenizer, dataloader, lr=5e-5, warmup_steps=500):
+    def __init__(self, tokenizer, dataloader, lr=3e-4, warmup_steps=1000):
         super().__init__()
         self.save_hyperparameters()
 
@@ -44,12 +84,16 @@ class MidiGPT2(pl.LightningModule):
     def configure_optimizers(self):
         from train import EPOCHS
 
-        optimizer = AdamW(self.parameters(), lr=self.lr)
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=self.warmup_steps,
-            num_training_steps=len(self.dataloader) * EPOCHS,
+        steps_per_epoch = len(self.dataloader)
+        optimizer, scheduler = _get_optim(
+            lr=self.lr,
+            model=self,
+            num_epochs=EPOCHS,
+            steps_per_epoch=steps_per_epoch,
+            warmup=self.warmup_steps,
+            end_ratio=0.1,
         )
+
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
 
     def load_checkpoint_expanding_pos_emb(self, checkpoint_path):
@@ -69,17 +113,20 @@ class MidiGPT2(pl.LightningModule):
 
         self.load_state_dict(state_dict, strict=False)
 
+
+
 class MidiQwen(pl.LightningModule):
-    def __init__(self, tokenizer, dataloader, lr=5e-5, warmup_steps=500):
+    def __init__(self, tokenizer, dataloader, lr=3e-4, warmup_steps=1000):
         super().__init__()
         self.save_hyperparameters()
 
         self.tokenizer = tokenizer
         config = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B", trust_remote_code=True)
-        config.hidden_size = 512  # 1024
-        config.num_hidden_layers = 14  # 28
-        config.num_attention_heads = 8  # 16
-        config.intermediate_size = 1024  # 3072
+        config.hidden_size = 384  # 1024
+        config.num_hidden_layers = 8  # 28
+        config.num_attention_heads = 6  # 16
+        config.num_key_value_heads = 6
+        config.intermediate_size = 768  # 3072
         config.max_position_embeddings = CONTEXT_SIZE
         config.bos_token_id = tokenizer["BOS_None"]
         config.eos_token_id = tokenizer["EOS_None"]
@@ -108,11 +155,15 @@ class MidiQwen(pl.LightningModule):
     def configure_optimizers(self):
         from train import EPOCHS
 
-        optimizer = AdamW(self.parameters(), lr=self.lr)
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=self.warmup_steps,
-            num_training_steps=len(self.dataloader) * EPOCHS,
+        steps_per_epoch = len(self.dataloader)
+        optimizer, scheduler = _get_optim(
+            lr=self.lr,
+            model=self,
+            num_epochs=EPOCHS,
+            steps_per_epoch=steps_per_epoch,
+            warmup=self.warmup_steps,
+            end_ratio=0.1,
         )
+
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
 

@@ -6,22 +6,22 @@ from miditok.pytorch_data import DatasetMIDI, DataCollator
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 import lightning as pl
+
+from src.tokenizer import get_tokenizer
 from utils import CONTEXT_SIZE
 import utils
-from src.model import MidiGPT2
+from src.model import MidiGPT2, MidiQwen
 
 EPOCHS = 32
 
 if __name__ == "__main__":
-    project_dir = Path(__file__).resolve().parent
-    midi_dir = project_dir.joinpath("data/midi")
-    midi_paths = list(midi_dir.glob("**/*.mid"))
-    dataset_chunks_dir = project_dir.joinpath("data/chunks")
+    tokenizer = get_tokenizer(version="v2")
 
-    tokenizer = utils.get_tokenizer()
+    project_dir = Path(__file__).resolve().parents[1]
 
-    all_midi = list(dataset_chunks_dir.glob("**/*.mid"))
-    train_files, val_files = train_test_split(all_midi, test_size=0.1, random_state=42)
+
+    train_files = list((project_dir / 'data' / 'chunks_train').glob("**/*.mid"))
+    val_files = list((project_dir / 'data' / 'chunks_val').glob("**/*.mid"))
 
     # --- TRAIN DATASET ---
     train_dataset = DatasetMIDI(
@@ -32,7 +32,7 @@ if __name__ == "__main__":
         eos_token_id=tokenizer["EOS_None"],
     )
     train_collator = DataCollator(tokenizer.pad_token_id, copy_inputs_as_labels=True)
-    train_loader = DataLoader(train_dataset, batch_size=8, collate_fn=train_collator, num_workers=19)
+    train_loader = DataLoader(train_dataset, batch_size=16, collate_fn=train_collator, num_workers=19)
 
     # --- VAL DATASET ---
     val_dataset = DatasetMIDI(
@@ -43,7 +43,7 @@ if __name__ == "__main__":
         eos_token_id=tokenizer["EOS_None"],
     )
     val_collator = DataCollator(tokenizer.pad_token_id, copy_inputs_as_labels=True)
-    val_loader = DataLoader(val_dataset, batch_size=8, collate_fn=val_collator, num_workers=19)
+    val_loader = DataLoader(val_dataset, batch_size=16, collate_fn=val_collator, num_workers=19)
 
     # === WANDB LOGGER ===
     wandb_logger = WandbLogger(project="symbolic-music-generation", log_model=True)
@@ -58,8 +58,8 @@ if __name__ == "__main__":
     )
 
     # === TRAIN ===
-    model = MidiGPT2(tokenizer, train_loader)
-    model.load_checkpoint_expanding_pos_emb("checkpoints/a.ckpt")
+    model = MidiQwen(tokenizer, train_loader)
+    # model.load_checkpoint_expanding_pos_emb("checkpoints/a.ckpt")
     trainer = pl.Trainer(
         max_epochs=EPOCHS,
         logger=wandb_logger,
