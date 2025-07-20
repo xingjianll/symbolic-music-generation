@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List
 
 import mido
+import miditok
 import numpy as np
 import symusic
 from dotenv import load_dotenv
@@ -11,9 +12,11 @@ import os
 from miditok.utils import split_files_for_training, get_bars_ticks
 from mido import MidiFile
 from symusic import Score
-from symusic.core import NoteTick, NoteTickList
+from symusic.core import NoteTick, NoteTickList, ScoreTick, TempoTick
 from symusic.types import Track
 
+from src.tokenizer import get_tokenizer
+from src.utils import merge_score_tracks, handle_tempos
 
 load_dotenv()
 
@@ -55,15 +58,7 @@ def merge_tracks(source_dir: str, dest_dir: str) -> None:
 
         print(file)
         score = Score.from_file(os.path.join(raw_midi_dir, file))
-        notes = []
-        for track in score.tracks:
-            for note in track.notes:
-                notes.append(note)
-        score.tracks.clear()
-        track = symusic.Track()
-        score.tracks.append(track)
-        for note in notes:
-            track.notes.append(note)
+        merge_score_tracks(score)
         score.dump_midi(dest_dir / file)
 
 def extract_melody(t: Track) -> Track:
@@ -307,5 +302,66 @@ def transpose(source_dir: str, dest_dir: str) -> None:
 #         num_overlap_bars=2
 #     )
 
+
+import random
+import shutil
+
+def split_train_val(source_subdir: str = "single_track_combined",
+                    train_ratio: float = 0.9) -> None:
+    """
+    Splits MIDI files from the source directory into training and validation sets.
+
+    Args:
+        source_subdir: Subdirectory in `data` containing the input MIDI files.
+        dest_subdir: Subdirectory in `data` to store the split `train` and `val` folders.
+        train_ratio: Ratio of files to assign to training set (default: 0.9).
+    """
+    source_dir = data_dir / source_subdir
+    train_dir = data_dir / (source_subdir+"_train")
+    val_dir = data_dir / (source_subdir+"_val")
+
+    train_dir.mkdir(parents=True, exist_ok=True)
+    val_dir.mkdir(parents=True, exist_ok=True)
+
+    all_files = [f for f in os.listdir(source_dir) if f.endswith(".mid")]
+    random.shuffle(all_files)
+
+    split_idx = int(len(all_files) * train_ratio)
+    train_files = all_files[:split_idx]
+    val_files = all_files[split_idx:]
+
+    for file in train_files:
+        shutil.copy(source_dir / file, train_dir / file)
+
+    for file in val_files:
+        shutil.copy(source_dir / file, val_dir / file)
+
+    print(f"Copied {len(train_files)} files to training set, {len(val_files)} to validation set.")
+
+
+def chunk(source_dir: str, dest_dir: str) -> None:
+    tokenizer = get_tokenizer(load=True, version='v2')
+    sizes = []
+    for file in os.listdir(data_dir / source_dir):
+        print(file)
+        score: ScoreTick = Score.from_file(data_dir / source_dir / file)
+        tracks = segment_melody_by_bars(score.tracks[0], score, 2, 6)
+
+        for i in range(len(tracks) -1):
+            new_score = score.copy(deep=True)
+            new_score.tracks.clear()
+            new_score.tracks.append(tracks[i])
+            new_score.tracks.append(tracks[i+1])
+            merge_score_tracks(new_score)
+            track: Track = new_score.tracks[0]
+            track.clip(track.notes[0].start, track.notes[-1].end, inplace=True)
+            new_score.shift_time(-track.notes[0].start, inplace=True)
+            handle_tempos(new_score)
+            sizes.append(len(tokenizer.encode(new_score)[0]))
+            new_score.dump_midi(data_dir / dest_dir / f"{file.title()}_{i}{i+1}.mid")
+    print(f"Average chunk size: {np.mean(sizes)}")
+
+
+
 if __name__ == "__main__":
-    merge_tracks('duo_track', 'single_track_combined')
+    chunk("single_track_combined_train", "chunks_train")
