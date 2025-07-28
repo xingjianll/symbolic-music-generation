@@ -116,7 +116,7 @@ class MidiGPT2(pl.LightningModule):
 
 
 class MidiQwen(pl.LightningModule):
-    def __init__(self, tokenizer, dataloader, lr=3e-4, warmup_steps=1000):
+    def __init__(self, tokenizer, dataloader, lr=1e-4, warmup_steps=1000):
         super().__init__()
         self.save_hyperparameters()
 

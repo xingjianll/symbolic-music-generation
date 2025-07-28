@@ -12,7 +12,7 @@ from src.utils import CONTEXT_SIZE
 import src.utils
 from src.model import MidiGPT2, MidiQwen
 
-EPOCHS = 32
+EPOCHS = 6
 
 if __name__ == "__main__":
     tokenizer = get_tokenizer(version="v2")
@@ -20,7 +20,7 @@ if __name__ == "__main__":
     project_dir = Path(__file__).resolve().parents[1]
 
 
-    train_files = list((project_dir / 'data' / 'chunks_train').glob("**/*.mid"))
+    train_files = list((project_dir / 'data' / 'chunks_train_2').glob("**/*.mid"))
     val_files = list((project_dir / 'data' / 'chunks_val').glob("**/*.mid"))
 
     # --- TRAIN DATASET ---
@@ -32,7 +32,7 @@ if __name__ == "__main__":
         eos_token_id=tokenizer["EOS_None"],
     )
     train_collator = DataCollator(tokenizer.pad_token_id, copy_inputs_as_labels=True)
-    train_loader = DataLoader(train_dataset, batch_size=16, collate_fn=train_collator, num_workers=19)
+    train_loader = DataLoader(train_dataset, batch_size=24, collate_fn=train_collator, num_workers=32)
 
     # --- VAL DATASET ---
     val_dataset = DatasetMIDI(
@@ -43,7 +43,7 @@ if __name__ == "__main__":
         eos_token_id=tokenizer["EOS_None"],
     )
     val_collator = DataCollator(tokenizer.pad_token_id, copy_inputs_as_labels=True)
-    val_loader = DataLoader(val_dataset, batch_size=16, collate_fn=val_collator, num_workers=19)
+    val_loader = DataLoader(val_dataset, batch_size=24, collate_fn=val_collator, num_workers=32)
 
     # === WANDB LOGGER ===
     wandb_logger = WandbLogger(project="symbolic-music-generation", log_model=True)
@@ -53,7 +53,7 @@ if __name__ == "__main__":
         filename="gpt2-midi-{epoch:02d}-{train_loss:.4f}",
         monitor='train_loss',
         every_n_epochs=1,
-        save_top_k=2,
+        save_top_k=4,
         save_last=True,
     )
 
@@ -67,7 +67,8 @@ if __name__ == "__main__":
         log_every_n_steps=1,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=100
+        val_check_interval=500,
+        precision="bf16-mixed"
     )
 
     trainer.fit(model, train_loader, val_loader)
