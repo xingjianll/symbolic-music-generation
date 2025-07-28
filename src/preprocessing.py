@@ -2,8 +2,8 @@ import shutil
 from pathlib import Path
 from typing import List
 
-import mido
-import miditok
+import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
 import symusic
 from dotenv import load_dotenv
@@ -14,9 +14,10 @@ from mido import MidiFile
 from symusic import Score
 from symusic.core import NoteTick, NoteTickList, ScoreTick, TempoTick
 from symusic.types import Track
+from tqdm import tqdm
 
 from src.tokenizer import get_tokenizer
-from src.utils import merge_score_tracks, handle_tempos
+from src.utils import merge_score_tracks, handle_tempos, handle_key_sigs, handle_time_sigs
 
 load_dotenv()
 
@@ -276,11 +277,17 @@ def transpose(source_dir: str, dest_dir: str) -> None:
         if not mid.endswith(".mid"):
             continue
         score = Score(midi_dir.joinpath(mid))
-        for i in range(6):
-            scores.append((score.shift_pitch(i), str(i)+mid))
+        for i in range(0, 3):
+            try:
+                scores.append((score.shift_pitch(i), str(i)+mid))
+            except:
+                ...
 
-        for i in range(-6, 0):
-            scores.append((score.shift_pitch(i), str(i)+mid))
+        for i in range(-2, 0):
+            try:
+                scores.append((score.shift_pitch(i), str(i) + mid))
+            except:
+                ...
 
     for score in scores:
         score[0].dump_midi(dest_dir.joinpath(score[1]))
@@ -345,7 +352,7 @@ def chunk(source_dir: str, dest_dir: str) -> None:
     for file in os.listdir(data_dir / source_dir):
         print(file)
         score: ScoreTick = Score.from_file(data_dir / source_dir / file)
-        tracks = segment_melody_by_bars(score.tracks[0], score, 2, 6)
+        tracks = segment_melody_by_bars(score.tracks[0], score, 4, 12)
 
         for i in range(len(tracks) -1):
             new_score = score.copy(deep=True)
@@ -357,11 +364,127 @@ def chunk(source_dir: str, dest_dir: str) -> None:
             track.clip(track.notes[0].start, track.notes[-1].end, inplace=True)
             new_score.shift_time(-track.notes[0].start, inplace=True)
             handle_tempos(new_score)
+            handle_key_sigs(new_score)
+            handle_time_sigs(new_score)
+            new_score.clip(0, track.notes[-1].end, inplace=True)
             sizes.append(len(tokenizer.encode(new_score)[0]))
             new_score.dump_midi(data_dir / dest_dir / f"{file.title()}_{i}{i+1}.mid")
     print(f"Average chunk size: {np.mean(sizes)}")
 
 
+def remove_empty_track_files(subdir: str) -> None:
+    """
+    Removes MIDI files from the given subdirectory if they contain zero tracks.
+
+    Args:
+        subdir: Subdirectory under `data/` to scan for empty track files.
+    """
+    midi_dir = data_dir / subdir
+    removed = 0
+
+    for file in os.listdir(midi_dir):
+        if not file.endswith(".mid"):
+            continue
+
+        file_path = midi_dir / file
+
+        try:
+            score = Score.from_file(file_path)
+            if len(score.tracks) == 0:
+                print(f"Removing empty file: {file}")
+                file_path.unlink()
+                removed += 1
+        except Exception as e:
+            print(f"Error loading {file}: {e} — skipping.")
+
+    print(f"Removed {removed} empty-track files from '{subdir}'.")
+
+
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
+
+
+def process_midi_file(args):
+    """Process a single MIDI file and return its token length."""
+    file_path, tokenizer_params = args
+    try:
+        # Re-instantiate tokenizer in each process
+        tokenizer = get_tokenizer(load=True, version='v2')
+        score = Score.from_file(file_path)
+        tokens = tokenizer.encode(score)[0]
+        if len(tokens) > 10000:
+            print(file_path)
+        return len(tokens)
+    except Exception as e:
+        print(f"Error processing {file_path}: {e}")
+        return None
+
+
+def plot_chunk_token_lengths(subdir: str = "chunks_train") -> None:
+    """
+    Tokenizes a random 2% sample of MIDI files in the given directory
+    and plots the distribution of token sequence lengths using parallel processing.
+
+    Args:
+        subdir: Subdirectory under `data/` containing the chunked MIDI files.
+    """
+    midi_dir = data_dir / subdir
+    all_files = [f for f in os.listdir(midi_dir) if f.endswith(".mid")]
+
+    if not all_files:
+        print("No MIDI files found.")
+        return
+
+    # Sample 1/50 (2%) of files, at least 1
+    sample_size = max(1, len(all_files) // 50)
+    sampled_files = random.sample(all_files, sample_size)
+
+    # Prepare file paths
+    file_paths = [midi_dir / file for file in sampled_files]
+
+    # Prepare arguments for parallel processing
+    args_list = [(file_path, None) for file_path in file_paths]
+
+    # Use parallel processing
+    num_processes = min(mp.cpu_count(), len(sampled_files))
+    lengths = []
+
+    with ProcessPoolExecutor(max_workers=num_processes) as executor:
+        results = list(tqdm(
+            executor.map(process_midi_file, args_list),
+            total=len(args_list),
+            desc="Processing MIDI files"
+        ))
+
+    # Filter out None results (failed files)
+    lengths = [length for length in results if length is not None]
+
+    if not lengths:
+        print("No valid MIDI files processed.")
+        return
+
+    # Plotting
+    plt.figure(figsize=(10, 6))
+    sns.histplot(lengths, bins=30, kde=True)
+    plt.title("Tokenized MIDI Chunk Lengths (Sampled 2%)")
+    plt.xlabel("Token Count")
+    plt.ylabel("Frequency")
+
+    # Stats
+    mean_len = np.mean(lengths)
+    median_len = np.median(lengths)
+    std_len = np.std(lengths)
+
+    print(f"Sampled {len(lengths)} files.")
+    print(f"Mean: {mean_len:.2f}, Median: {median_len:.2f}, Std: {std_len:.2f}")
+
+    # Show stats on plot
+    plt.axvline(mean_len, color='red', linestyle='--', label=f'Mean: {mean_len:.0f}')
+    plt.axvline(median_len, color='green', linestyle='--', label=f'Median: {median_len:.0f}')
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
 
 if __name__ == "__main__":
-    chunk("single_track_combined_train", "chunks_train")
+    transpose("chunks_train", "chunks_train_2")
