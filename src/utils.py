@@ -1,7 +1,7 @@
 import symusic
 from symusic.core import ScoreTick, TempoTick
 
-CONTEXT_SIZE = 1024
+CONTEXT_SIZE = 2048
 
 
 def merge_score_tracks(score: symusic.Score) -> None:

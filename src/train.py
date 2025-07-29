@@ -12,7 +12,7 @@ from src.utils import CONTEXT_SIZE
 import src.utils
 from src.model import MidiGPT2, MidiQwen
 
-EPOCHS = 6
+EPOCHS = 12
 
 if __name__ == "__main__":
     tokenizer = get_tokenizer(version="v2")
@@ -32,7 +32,7 @@ if __name__ == "__main__":
         eos_token_id=tokenizer["EOS_None"],
     )
     train_collator = DataCollator(tokenizer.pad_token_id, copy_inputs_as_labels=True)
-    train_loader = DataLoader(train_dataset, batch_size=24, collate_fn=train_collator, num_workers=32)
+    train_loader = DataLoader(train_dataset, batch_size=12, collate_fn=train_collator, num_workers=16, shuffle=True)
 
     # --- VAL DATASET ---
     val_dataset = DatasetMIDI(
@@ -43,23 +43,23 @@ if __name__ == "__main__":
         eos_token_id=tokenizer["EOS_None"],
     )
     val_collator = DataCollator(tokenizer.pad_token_id, copy_inputs_as_labels=True)
-    val_loader = DataLoader(val_dataset, batch_size=24, collate_fn=val_collator, num_workers=32)
+    val_loader = DataLoader(val_dataset, batch_size=12, collate_fn=val_collator, num_workers=16)
 
     # === WANDB LOGGER ===
     wandb_logger = WandbLogger(project="symbolic-music-generation", log_model=True)
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=project_dir / "checkpoints",
-        filename="gpt2-midi-{epoch:02d}-{train_loss:.4f}",
+        filename="qwen-midi-{epoch:02d}-{val_loss:.4f}",
         monitor='train_loss',
         every_n_epochs=1,
-        save_top_k=4,
+        save_top_k=8,
         save_last=True,
     )
 
     # === TRAIN ===
     model = MidiQwen(tokenizer, train_loader)
-    # model.load_checkpoint_expanding_pos_emb("checkpoints/a.ckpt")
+    model.load_checkpoint_expanding_pos_emb("checkpoints/pretrain-1024-qwen.ckpt")
     trainer = pl.Trainer(
         max_epochs=EPOCHS,
         logger=wandb_logger,
@@ -67,7 +67,7 @@ if __name__ == "__main__":
         log_every_n_steps=1,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=500,
+        val_check_interval=300,
         precision="bf16-mixed"
     )
 

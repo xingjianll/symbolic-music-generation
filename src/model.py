@@ -116,7 +116,7 @@ class MidiGPT2(pl.LightningModule):
 
 
 class MidiQwen(pl.LightningModule):
-    def __init__(self, tokenizer, dataloader, lr=1e-4, warmup_steps=1000):
+    def __init__(self, tokenizer, dataloader, lr=5e-5, warmup_steps=1000):
         super().__init__()
         self.save_hyperparameters()
 
@@ -167,3 +167,9 @@ class MidiQwen(pl.LightningModule):
 
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
 
+    def load_checkpoint_expanding_pos_emb(self, checkpoint_path):
+        """Load checkpoint and expand positional embeddings if needed"""
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        state_dict = checkpoint["state_dict"]
+
+        self.load_state_dict(state_dict, strict=False)
