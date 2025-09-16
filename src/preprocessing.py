@@ -346,19 +346,20 @@ def split_train_val(source_subdir: str = "single_track_combined",
     print(f"Copied {len(train_files)} files to training set, {len(val_files)} to validation set.")
 
 
-def chunk(source_dir: str, dest_dir: str) -> None:
+def chunk(source_dir: str, dest_dir: str, chunk_size: int = 4, slide_step: int = 2) -> None:
     tokenizer = get_tokenizer(load=True, version='v2')
     sizes = []
     for file in os.listdir(data_dir / source_dir):
+        if not file.endswith(".mid"):
+            continue
         print(file)
         score: ScoreTick = Score.from_file(data_dir / source_dir / file)
-        tracks = segment_melody_by_bars(score.tracks[0], score, 4, 12)
-
-        for i in range(len(tracks) -1):
+        tracks = segment_melody_by_bars(score.tracks[0], score, 4, 8)
+        if len(tracks) <= chunk_size:
             new_score = score.copy(deep=True)
             new_score.tracks.clear()
-            new_score.tracks.append(tracks[i])
-            new_score.tracks.append(tracks[i+1])
+            for j in range(len(tracks)):
+                new_score.tracks.append(tracks[j])
             merge_score_tracks(new_score)
             track: Track = new_score.tracks[0]
             track.clip(track.notes[0].start, track.notes[-1].end, inplace=True)
@@ -368,7 +369,41 @@ def chunk(source_dir: str, dest_dir: str) -> None:
             handle_time_sigs(new_score)
             new_score.clip(0, track.notes[-1].end, inplace=True)
             sizes.append(len(tokenizer.encode(new_score)[0]))
-            new_score.dump_midi(data_dir / dest_dir / f"{file.title()}_{i}{i+1}.mid")
+            new_score.dump_midi(data_dir / dest_dir / f"{file.title()}_0_{len(tracks) - 1}.mid")
+            continue
+
+        # Start from negative indices to create partial first chunks (symmetric to partial last chunks)
+        start_offset = chunk_size - slide_step
+        for i in range(-start_offset, len(tracks), slide_step):
+            new_score = score.copy(deep=True)
+            new_score.tracks.clear()
+
+            # Handle negative start (partial first chunks)
+            actual_start = max(0, i)
+            actual_end = min(i + chunk_size, len(tracks))
+            tracks_to_add = actual_end - actual_start
+
+            # Skip if no tracks to add
+            if tracks_to_add <= 0:
+                continue
+
+            for j in range(tracks_to_add):
+                new_score.tracks.append(tracks[actual_start + j])
+
+            merge_score_tracks(new_score)
+            track: Track = new_score.tracks[0]
+            track.clip(track.notes[0].start, track.notes[-1].end, inplace=True)
+            new_score.shift_time(-track.notes[0].start, inplace=True)
+            handle_tempos(new_score)
+            handle_key_sigs(new_score)
+            handle_time_sigs(new_score)
+            new_score.clip(0, track.notes[-1].end, inplace=True)
+            sizes.append(len(tokenizer.encode(new_score)[0]))
+
+            # Updated filename to reflect the actual range
+            end_track = actual_end - 1
+            new_score.dump_midi(data_dir / dest_dir / f"{file.title()}_{actual_start}_{end_track}.mid")
+
     print(f"Average chunk size: {np.mean(sizes)}")
 
 
@@ -436,7 +471,7 @@ def plot_chunk_token_lengths(subdir: str = "chunks_train") -> None:
         return
 
     # Sample 1/50 (2%) of files, at least 1
-    sample_size = max(1, len(all_files) // 50)
+    sample_size = max(1, len(all_files) // 1)
     sampled_files = random.sample(all_files, sample_size)
 
     # Prepare file paths
@@ -487,4 +522,5 @@ def plot_chunk_token_lengths(subdir: str = "chunks_train") -> None:
 
 
 if __name__ == "__main__":
-    transpose("chunks_train", "chunks_train_2")
+    # chunk("single_track_combined_val_2", "chunks_val_2",9, 3)
+    split_train_val("out")

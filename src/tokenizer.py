@@ -1,10 +1,12 @@
 import os
+from functools import lru_cache
 
 from pathlib import Path
 import dotenv
 from miditok import TokenizerConfig, PerTok, REMI
 
 
+@lru_cache(maxsize=None)
 def get_tokenizer(load=True, version='v1'):
     if version == 'v1':
         config = TokenizerConfig(
