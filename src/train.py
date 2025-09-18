@@ -10,7 +10,7 @@ import lightning as pl
 from src.tokenizer import get_tokenizer
 from src.utils import CONTEXT_SIZE
 import src.utils
-from src.model import MidiGPT2, MidiQwen
+from src.model.model import MidiGPT2, MidiQwen
 
 EPOCHS = 12
 

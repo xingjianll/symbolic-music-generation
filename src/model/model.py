@@ -1,7 +1,9 @@
 import lightning as pl
+from peft import LoraConfig, get_peft_model, TaskType
 from torch import nn
 from transformers import GPT2Config, GPT2LMHeadModel, AutoModelForCausalLM, AutoConfig
 import torch
+
 from src.utils import CONTEXT_SIZE
 
 
@@ -173,3 +175,89 @@ class MidiQwen(pl.LightningModule):
         state_dict = checkpoint["state_dict"]
 
         self.load_state_dict(state_dict, strict=False)
+
+
+import lightning as pl
+import torch
+
+
+
+class MidiAria(pl.LightningModule):
+    def __init__(self, tokenizer, dataloader, lr=5e-5, warmup_steps=1000):
+        super().__init__()
+        # self.save_hyperparameters()
+
+        self.tokenizer = tokenizer
+        self.model = AutoModelForCausalLM.from_pretrained("loubb/aria-medium-base", trust_remote_code=True)
+        self.lr = lr
+        self.warmup_steps = warmup_steps
+        self.dataloader = dataloader
+
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+
+    def training_step(self, batch, batch_idx):
+        outputs = self(**batch)
+        loss = outputs.loss
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        outputs = self(**batch)
+        val_loss = outputs.loss
+        self.log("val_loss", val_loss, prog_bar=True, sync_dist=True)
+        return val_loss
+
+    def configure_optimizers(self):
+        from src.train import EPOCHS
+
+        steps_per_epoch = len(self.dataloader)
+        optimizer, scheduler = _get_optim(
+            lr=self.lr,
+            model=self,
+            num_epochs=EPOCHS,
+            steps_per_epoch=steps_per_epoch,
+            warmup=self.warmup_steps,
+            end_ratio=0.1,
+        )
+
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
+
+    def load_checkpoint_expanding_pos_emb(self, checkpoint_path):
+        """Load checkpoint and expand position embeddings if needed."""
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        state_dict = checkpoint["state_dict"]
+
+        model_pos_emb = self.model.model.tok_embeddings.weight  # (vocab_size, hidden_dim)
+        old_pos_emb = state_dict.get("model.model.tok_embeddings.weight")
+
+        if old_pos_emb is not None and old_pos_emb.shape[0] < model_pos_emb.shape[0]:
+            print(f"Expanding embeddings: {old_pos_emb.shape[0]} → {model_pos_emb.shape[0]}")
+            model_pos_emb.data[:old_pos_emb.shape[0]] = old_pos_emb
+            state_dict["model.model.tok_embeddings.weight"] = model_pos_emb
+        else:
+            print("Loading embeddings without resizing.")
+
+        self.load_state_dict(state_dict, strict=False)
+
+    def to_lora(self):
+        # FREEZE WEIGHTS
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        # LoRa
+        config = LoraConfig(
+            r=128,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+            target_modules = [
+                "mixed_qkv",
+                "att_proj_linear",
+                "ff_gate_proj",
+                "ff_up_proj",
+                "ff_down_proj"
+            ]
+        )
+        self.model = get_peft_model(self.model, config)
