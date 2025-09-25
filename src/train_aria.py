@@ -15,7 +15,7 @@ from src.utils import CONTEXT_SIZE, merge_score_tracks
 from src.model.model import MidiAria
 import symusic
 
-EPOCHS = 3
+EPOCHS = 4
 
 device = "cuda"
 torch.Tensor.cuda = lambda self, *args, **kwargs: self.to(device)
