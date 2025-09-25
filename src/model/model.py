@@ -183,7 +183,7 @@ import torch
 
 
 class MidiAria(pl.LightningModule):
-    def __init__(self, tokenizer, dataloader, lr=5e-5, warmup_steps=1000):
+    def __init__(self, tokenizer, dataloader, lr=5e-4, warmup_steps=10):
         super().__init__()
         # self.save_hyperparameters()
 
@@ -255,7 +255,7 @@ class MidiAria(pl.LightningModule):
 
         # LoRa
         config = LoraConfig(
-            r=128,
+            r=16,
             lora_alpha=32,
             lora_dropout=0.05,
             bias="none",
