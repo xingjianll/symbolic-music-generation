@@ -15,9 +15,9 @@ from src.utils import CONTEXT_SIZE, merge_score_tracks
 from src.model.model import MidiAria
 import symusic
 
-EPOCHS = 12
+EPOCHS = 3
 
-device = "mps" if torch.backends.mps.is_available() else "cpu"
+device = "cuda"
 torch.Tensor.cuda = lambda self, *args, **kwargs: self.to(device)
 
 
@@ -179,7 +179,7 @@ if __name__ == "__main__":
         train_dataset,
         batch_size=4,
         collate_fn=train_collate_fn,
-        num_workers=0,
+        num_workers=10,
         shuffle=True
     )
 
@@ -195,7 +195,7 @@ if __name__ == "__main__":
         val_dataset,
         batch_size=4,
         collate_fn=train_collate_fn,
-        num_workers=0
+        num_workers=10
     )
 
     # === WANDB LOGGER ===
@@ -221,7 +221,7 @@ if __name__ == "__main__":
     model.to_lora()
 
     # Enable gradient checkpointing to save memory
-    model.model.gradient_checkpointing_enable()
+    # model.model.gradient_checkpointing_enable()
 
     model.to(device)
 
@@ -232,7 +232,7 @@ if __name__ == "__main__":
         log_every_n_steps=1,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=20,
+        val_check_interval=40,
     )
 
     trainer.fit(model, train_loader, val_loader)
