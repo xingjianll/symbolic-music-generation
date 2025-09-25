@@ -98,6 +98,7 @@ class MelodyHarmonizationDataset(Dataset):
             except Exception as e:
                 print(f"Failed to process pair {melody_file.name}: {e}")
                 continue
+        print(f"size of pairs: {len(self.sequences)}")
 
     def __len__(self):
         return len(self.sequences)
@@ -177,7 +178,7 @@ if __name__ == "__main__":
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=4,
+        batch_size=8,
         collate_fn=train_collate_fn,
         num_workers=10,
         shuffle=True
@@ -193,7 +194,7 @@ if __name__ == "__main__":
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=4,
+        batch_size=8,
         collate_fn=train_collate_fn,
         num_workers=10
     )
