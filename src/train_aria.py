@@ -142,7 +142,7 @@ if __name__ == "__main__":
         "loubb/aria-medium-base",
         trust_remote_code=True,
         add_eos_token=True,
-        add_dim_token=False
+        add_dim_token=True
     )
     tokenizer.preprocess_score = lambda x: x
 
