@@ -198,13 +198,21 @@ class MidiAria(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         outputs = self(**batch)
-        loss = outputs.loss
+        # Handle both tuple and object returns from PEFT models
+        if isinstance(outputs, tuple):
+            loss = outputs[0]
+        else:
+            loss = outputs.loss
         self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
         outputs = self(**batch)
-        val_loss = outputs.loss
+        # Handle both tuple and object returns from PEFT models
+        if isinstance(outputs, tuple):
+            val_loss = outputs[0]
+        else:
+            val_loss = outputs.loss
         self.log("val_loss", val_loss, prog_bar=True, sync_dist=True)
         return val_loss
 
