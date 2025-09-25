@@ -219,6 +219,10 @@ if __name__ == "__main__":
 
     model.load_state_dict(hf_model.state_dict(), strict=False)
     model.to_lora()
+
+    # Enable gradient checkpointing to save memory
+    model.model.gradient_checkpointing_enable()
+
     model.to(device)
 
     trainer = pl.Trainer(
