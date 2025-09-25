@@ -233,7 +233,7 @@ if __name__ == "__main__":
         log_every_n_steps=1,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=40,
+        val_check_interval=20,
     )
 
     trainer.fit(model, train_loader, val_loader)
