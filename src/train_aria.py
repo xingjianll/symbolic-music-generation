@@ -177,7 +177,7 @@ if __name__ == "__main__":
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=12,
+        batch_size=4,
         collate_fn=train_collate_fn,
         num_workers=0,
         shuffle=True
@@ -193,7 +193,7 @@ if __name__ == "__main__":
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=12,
+        batch_size=4,
         collate_fn=train_collate_fn,
         num_workers=0
     )

@@ -255,7 +255,7 @@ class MidiAria(pl.LightningModule):
 
         # LoRa
         config = LoraConfig(
-            r=16,
+            r=32,
             lora_alpha=32,
             lora_dropout=0.05,
             bias="none",
