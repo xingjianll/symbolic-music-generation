@@ -333,12 +333,12 @@ def train_style():
     # Chopin dataset
     chopin_files = sorted((project_dir / 'data' / 'chopin').glob("**/*.mid"))
 
-    train_dataset = ChopinStyleDataset(
+    train_dataset = StyleDataset(
         midi_files=chopin_files[:int(0.8 * len(chopin_files))],
         tokenizer=tokenizer,
         max_seq_len=CONTEXT_SIZE
     )
-    val_dataset = ChopinStyleDataset(
+    val_dataset = StyleDataset(
         midi_files=chopin_files[int(0.8 * len(chopin_files)):],
         tokenizer=tokenizer,
         max_seq_len=CONTEXT_SIZE
