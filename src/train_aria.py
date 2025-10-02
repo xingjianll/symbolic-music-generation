@@ -135,7 +135,84 @@ def collate_fn(batch, pad_token_id):
         "labels": labels
     }
 
-if __name__ == "__main__":
+
+class StyleDataset(Dataset):
+    def __init__(self, midi_files: List[Path], tokenizer, max_seq_len: int = 8192, use_style_token: bool = True):
+        self.midi_files = midi_files
+        self.tokenizer = tokenizer
+        self.max_seq_len = max_seq_len
+        self.use_style_token = use_style_token
+        self.sequences = []
+
+        self._load_and_tokenize()
+
+    def _load_and_tokenize(self):
+        for midi_file in self.midi_files:
+            try:
+                # Load and merge tracks
+                score = symusic.Score.from_file(str(midi_file))
+                merge_score_tracks(score)
+
+                # Set all tracks to piano (program 0)
+                for track in score.tracks:
+                    track.program = 0
+
+                # Dump to temp MIDI file
+                with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as tmp:
+                    score.dump_midi(tmp.name)
+                    midi_dict = MidiDict.from_midi(tmp.name)
+                os.unlink(tmp.name)
+
+                # Tokenize with EOS + DIM tokens
+                midi_tokens = self.tokenizer.tokenize(
+                    midi_dict, add_eos_token=True, add_dim_token=True
+                )
+                midi_token_ids = self.tokenizer._tokenizer.encode(midi_tokens)
+
+                # Optional style token
+                if self.use_style_token:
+                    style_token_id = self.tokenizer._tokenizer.encode("<style:chopin>")
+                    midi_token_ids = style_token_id + midi_token_ids
+
+                # ✅ Truncate instead of skipping
+                if len(midi_token_ids) > self.max_seq_len:
+                    midi_token_ids = midi_token_ids[:self.max_seq_len]
+
+                # Store only meaningful sequences
+                if len(midi_token_ids) > 50:
+                    self.sequences.append({
+                        "input_ids": midi_token_ids
+                    })
+
+            except Exception as e:
+                print(f"Failed to process {midi_file.name}: {e}")
+                continue
+
+        print(f"Loaded {len(self.sequences)} Chopin sequences.")
+
+    def __len__(self):
+        return len(self.sequences)
+
+    def __getitem__(self, idx):
+        return self.sequences[idx]
+
+def style_collate_fn(batch, pad_token_id):
+    input_ids = [torch.tensor(item["input_ids"], dtype=torch.long) for item in batch]
+
+    padded_input_ids = torch.nn.utils.rnn.pad_sequence(
+        input_ids, batch_first=True, padding_value=pad_token_id
+    )
+
+    # ✅ Standard LM objective: labels = input_ids shifted by 1
+    labels = padded_input_ids.clone()
+
+    return {
+        "input_ids": padded_input_ids,
+        "labels": labels
+    }
+
+
+def train_seq2seq():
     # tokenizer = get_tokenizer(version="v2")
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -147,7 +224,6 @@ if __name__ == "__main__":
     tokenizer.preprocess_score = lambda x: x
 
     project_dir = Path(__file__).resolve().parents[1]
-
 
     # Load paired datasets - melody files and harmony files
     melody_train_files = sorted((project_dir / 'data' / 'wikifonia_midi_no_chord').glob("**/*.mid"))
@@ -239,3 +315,90 @@ if __name__ == "__main__":
     trainer.fit(model, train_loader, val_loader)
 
     print("Done")
+
+
+def train_style():
+    # tokenizer = get_tokenizer(version="v2")
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        "loubb/aria-medium-base",
+        trust_remote_code=True,
+        add_eos_token=True,
+        add_dim_token=False
+    )
+    tokenizer.preprocess_score = lambda x: x
+
+    project_dir = Path(__file__).resolve().parents[1]
+
+    # Chopin dataset
+    chopin_files = sorted((project_dir / 'data' / 'chopin').glob("**/*.mid"))
+
+    train_dataset = ChopinStyleDataset(
+        midi_files=chopin_files[:int(0.8 * len(chopin_files))],
+        tokenizer=tokenizer,
+        max_seq_len=CONTEXT_SIZE
+    )
+    val_dataset = ChopinStyleDataset(
+        midi_files=chopin_files[int(0.8 * len(chopin_files)):],
+        tokenizer=tokenizer,
+        max_seq_len=CONTEXT_SIZE
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=8,
+        collate_fn=lambda b: chopin_collate_fn(b, tokenizer.pad_token_id),
+        num_workers=10,
+        shuffle=True
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=8,
+        collate_fn=lambda b: chopin_collate_fn(b, tokenizer.pad_token_id),
+        num_workers=10
+    )
+
+    # === WANDB LOGGER ===
+    wandb_logger = WandbLogger(project="symbolic-music-generation", log_model=True)
+
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=project_dir / "checkpoints",
+        filename="aria-style-{epoch:02d}-{val_loss:.4f}",
+        monitor='train_loss',
+        every_n_epochs=1,
+        save_top_k=8,
+        save_last=True,
+    )
+
+    # === TRAIN ===
+    model = MidiAria(tokenizer, train_loader)
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        "loubb/aria-medium-base",
+        trust_remote_code=True
+    )
+
+    model.load_state_dict(hf_model.state_dict(), strict=False)
+    model.to_lora()
+
+    # Enable gradient checkpointing to save memory
+    # model.model.gradient_checkpointing_enable()
+
+    model.to(device)
+
+    trainer = pl.Trainer(
+        max_epochs=EPOCHS,
+        logger=wandb_logger,
+        gradient_clip_val=1.0,
+        log_every_n_steps=1,
+        accelerator="auto",
+        callbacks=[checkpoint_callback],
+        val_check_interval=20,
+    )
+
+    trainer.fit(model, train_loader, val_loader)
+
+    print("Done")
+
+if __name__ == "__main__":
+    train_style()
