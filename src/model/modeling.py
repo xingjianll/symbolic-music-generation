@@ -82,76 +82,19 @@ class Qwen3MLP(nn.Module):
         return down_proj
 
 
-class Qwen3RotaryEmbedding(nn.Module):
-    inv_freq: torch.Tensor  # fix linting for `register_buffer`
-
-    def __init__(self, config: Qwen3Config, device=None):
-        super().__init__()
-        self.max_seq_len_cached = config.max_position_embeddings
-        self.original_max_seq_len = config.max_position_embeddings
-
-        self.config = config
-
-        self.rope_type = self.config.rope_parameters["rope_type"]
-        rope_init_fn: Callable = self.compute_default_rope_parameters
-        if self.rope_type != "default":
-            rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
-        inv_freq, self.attention_scaling = rope_init_fn(self.config, device)
-
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.original_inv_freq = inv_freq
-
-    @staticmethod
-    def compute_default_rope_parameters(
-        config: Optional[Qwen3Config] = None,
-        device: Optional["torch.device"] = None,
-        seq_len: Optional[int] = None,
-    ) -> tuple["torch.Tensor", float]:
-        """
-        Computes the inverse frequencies according to the original RoPE implementation
-        Args:
-            config ([`~transformers.PreTrainedConfig`]):
-                The model configuration.
-            device (`torch.device`):
-                The device to use for initialization of the inverse frequencies.
-            seq_len (`int`, *optional*):
-                The current sequence length. Unused for this type of RoPE.
-        Returns:
-            Tuple of (`torch.Tensor`, `float`), containing the inverse frequencies for the RoPE embeddings and the
-            post-processing scaling factor applied to the computed cos/sin (unused in this type of RoPE).
-        """
-        base = config.rope_parameters["rope_theta"]
-        dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
-
-        attention_factor = 1.0  # Unused in this type of RoPE
-
-        # Compute the inverse frequencies
-        inv_freq = 1.0 / (
-            base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
-        )
-        return inv_freq, attention_factor
-
-    @torch.no_grad()
-    @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
-    def forward(self, x, position_ids):
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
-        position_ids_expanded = position_ids[:, None, :].float()
-
-        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
-        with torch.autocast(device_type=device_type, enabled=False):  # Force float32
-            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos() * self.attention_scaling
-            sin = emb.sin() * self.attention_scaling
-
-        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
-
-
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
+
+
+def freqs_to_cos_sin(freqs):
+    """Convert frequencies to cos and sin embeddings."""
+    emb = torch.cat((freqs, freqs), dim=-1)
+    cos = emb.cos()
+    sin = emb.sin()
+    return cos, sin
 
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
@@ -365,13 +308,16 @@ class Qwen3Model(Qwen3PreTrainedModel):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+        self.config = config
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
             [Qwen3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.rotary_emb = Qwen3RotaryEmbedding(config=config)
+        # Get dim from config (head_dim)
+        # Get theta from rope_parameters if available, otherwise use default
+        theta = config.rope_parameters.get("rope_theta", 10000.0) if hasattr(config, "rope_parameters") else 10000.0
         self.gradient_checkpointing = False
         self.has_sliding_layers = "sliding_attention" in self.config.layer_types
 
@@ -389,6 +335,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        position_tensors: list[torch.Tensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -429,7 +376,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)
 
         hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings = self.rot_pos_emb(position_tensors)
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
@@ -448,6 +395,53 @@ class Qwen3Model(Qwen3PreTrainedModel):
             last_hidden_state=hidden_states,
             past_key_values=past_key_values if use_cache else None,
         )
+
+    def rot_pos_emb(self, position_tensors: list[torch.Tensor]) -> torch.Tensor:
+        """
+        Generate rotary position embeddings for continuous 4D positions.
+        
+        Args:
+            position_tensors: List of tensors, each with shape (num_tokens, 4) containing 
+                             continuous 4D positions for each token
+        
+        Returns:
+            torch.Tensor: Raw frequencies with shape (seq_len, dim) where adjacent pairs 
+                         have the same frequency value (matching RoPE from paper)
+        """
+        dim = self.config.hidden_size // self.config.num_heads
+        theta = 10000
+
+        device = position_tensors[0].device
+        
+        # Calculate total tokens (which should equal seq_len)
+
+        # Concatenate all position tensors
+        all_positions = torch.cat(position_tensors, dim=0)  # (seq_len, 4)
+        
+        # Create frequency bands - for 4D positions, we use dim/8 unique frequencies
+        # Each frequency will be used for a pair of dimensions (2D rotation)
+        # Applied to all 4 position dimensions gives us dim/8 * 2 * 4 = dim
+        freq_bands = 1.0 / (theta ** (torch.arange(0, dim // 4, 2, device=device).float() / dim))
+        
+        frequencies = []
+        
+        for d in range(4):  # For each of the 4 position dimensions
+            # Get positions for this dimension
+            pos_d = all_positions[:, d:d+1]  # (seq_len, 1)
+            
+            # Apply frequency bands to this position dimension
+            dim_frequencies = pos_d * freq_bands  # (seq_len, dim//8)
+            
+            # Duplicate each frequency to create pairs (matching RoPE paper)
+            # Each frequency is used for both elements of a 2D rotation
+            dim_frequencies = dim_frequencies.repeat_interleave(2, dim=-1)  # (seq_len, dim//4)
+            
+            frequencies.append(dim_frequencies)
+        
+        # Concatenate frequencies from all 4 dimensions
+        frequencies = torch.cat(frequencies, dim=-1)  # (seq_len, dim)
+        
+        return frequencies
 
 
 @auto_docstring
