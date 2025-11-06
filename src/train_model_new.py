@@ -195,8 +195,11 @@ class MidiDataset4D(Dataset):
         """Split concatenated sequence into fixed-size chunks."""
         total_len = all_position_tensors.shape[0]
         
-        # Use GPU if available for faster processing
+        # Use GPU with aggressive memory management
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()  # Clear GPU cache
+        
         all_position_tensors = all_position_tensors.to(device)
         print(f"Using {device} for RoPE computation...")
         
@@ -211,46 +214,43 @@ class MidiDataset4D(Dataset):
             pad_token = torch.tensor([last_time, 0.0, 2, 0], device=device)
             all_position_tensors = torch.cat([all_position_tensors, pad_token.repeat(pad_len, 1)])
         
-        # Split into chunks and process in batches to avoid memory issues
+        # Split into chunks and process ONE AT A TIME to avoid OOM
         chunks = all_position_tensors.view(-1, self.max_seq_len, 4)
         num_chunks = chunks.shape[0]
-        
-        # Process RoPE targets in batches to avoid memory explosion
-        batch_size = 20  # Process 20 chunks at a time
         all_rope_targets = []
         
-        print(f"Processing {num_chunks} chunks in batches of {batch_size}...")
-        for i in range(0, num_chunks, batch_size):
+        print(f"Processing {num_chunks} chunks one by one on GPU...")
+        for i in range(num_chunks):
             print(i)
-            end_idx = min(i + batch_size, num_chunks)
-            chunk_batch = chunks[i:end_idx]  # (batch_size, seq_len, 4)
+            # Process single chunk to avoid OOM
+            chunk = chunks[i:i+1]  # (1, seq_len, 4)
+            flattened = chunk.view(-1, 4)  # (seq_len, 4)
             
-            # Flatten for RoPE processing: (batch_size * seq_len, 4)
-            flattened = chunk_batch.view(-1, 4)
-            rope_batch = create_rope_targets(flattened)  # (batch_size * seq_len, head_dim)
+            # Clear cache before each chunk
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
             
-            # Reshape back to chunks: (batch_size, seq_len, head_dim)
-            rope_chunked = rope_batch.view(end_idx - i, self.max_seq_len, -1)
-            all_rope_targets.append(rope_chunked)
+            rope_batch = create_rope_targets(flattened)  # (seq_len, head_dim)
+            rope_chunked = rope_batch.unsqueeze(0)  # (1, seq_len, head_dim)
+            
+            # Move to CPU immediately to free GPU memory
+            all_rope_targets.append(rope_chunked.cpu())
         
-        # Concatenate all batches
+        # Concatenate all batches on CPU
         rope_targets_chunked = torch.cat(all_rope_targets, dim=0)  # (num_chunks, seq_len, head_dim)
         
-        # Vectorized creation of labels, masks, input_ids
+        # Create other tensors on CPU
         labels_batch = torch.cat([rope_targets_chunked[:, 1:], rope_targets_chunked[:, -1:]], dim=1)
-        attention_masks = torch.ones(num_chunks, self.max_seq_len, dtype=torch.long, device=device)
-        input_ids_batch = torch.zeros(num_chunks, self.max_seq_len, dtype=torch.long, device=device)
+        attention_masks = torch.ones(num_chunks, self.max_seq_len, dtype=torch.long)
+        input_ids_batch = torch.zeros(num_chunks, self.max_seq_len, dtype=torch.long)
         
         # Handle padding mask for last chunk only
         if needs_padding:
             attention_masks[-1, remainder:] = 0
             labels_batch[-1, remainder:] = -100
         
-        # Move back to CPU for dataset storage (datasets are typically CPU-based)
+        # Move chunks back to CPU
         chunks = chunks.cpu()
-        labels_batch = labels_batch.cpu()
-        attention_masks = attention_masks.cpu()
-        input_ids_batch = input_ids_batch.cpu()
         
         # Convert to list of dictionaries
         self.chunks = []
