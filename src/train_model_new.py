@@ -23,30 +23,36 @@ MAX_SEQ_LEN = CONTEXT_SIZE
 
 
 def _create_position_tensors(notes, score: ScoreSecond) -> torch.Tensor:
-    """Create 4D position tensors [start_time, duration, pitch, velocity]."""
-    positions = []
-
-    # BOS token: start_time=0, duration=0, pitch=0, velocity=0
-    positions.append([0.0, 0.0, 0, 0])
-
-    # Process each note
-    for note in notes:
-        start_time = float(note.start)
-        end_time = float(note.end)
-        duration = end_time - start_time
-        pitch = int(note.pitch)
-        velocity = int(note.velocity)
-
-        positions.append([start_time, duration, pitch, velocity])
-
-    # EOS token: start_time = last note end time, duration=0, pitch=1, velocity=0
-    if notes:
-        last_end_time = float(notes[-1].end)
-    else:
-        last_end_time = 0.0
-    positions.append([last_end_time, 0.0, 1, 0])
-
-    return torch.tensor(positions, dtype=torch.float32)
+    """Create 4D position tensors [start_time, duration, pitch, velocity] efficiently."""
+    num_notes = len(notes)
+    
+    if num_notes == 0:
+        # Only BOS and EOS tokens
+        return torch.tensor([[0.0, 0.0, 0, 0], [0.0, 0.0, 1, 0]], dtype=torch.float32)
+    
+    # Preallocate tensor: BOS + notes + EOS
+    positions = torch.zeros(num_notes + 2, 4, dtype=torch.float32)
+    
+    # BOS token at index 0: [0, 0, 0, 0] (already zeros)
+    
+    # Vectorized note processing
+    start_times = torch.tensor([note.start for note in notes], dtype=torch.float32)
+    end_times = torch.tensor([note.end for note in notes], dtype=torch.float32)
+    durations = end_times - start_times
+    pitches = torch.tensor([note.pitch for note in notes], dtype=torch.float32)
+    velocities = torch.tensor([note.velocity for note in notes], dtype=torch.float32)
+    
+    # Fill note positions (indices 1 to num_notes)
+    positions[1:num_notes+1, 0] = start_times
+    positions[1:num_notes+1, 1] = durations  
+    positions[1:num_notes+1, 2] = pitches
+    positions[1:num_notes+1, 3] = velocities
+    
+    # EOS token at last index
+    last_end_time = end_times[-1] if num_notes > 0 else 0.0
+    positions[-1] = torch.tensor([last_end_time, 0.0, 1, 0], dtype=torch.float32)
+    
+    return positions
 
 
 def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> torch.Tensor:
