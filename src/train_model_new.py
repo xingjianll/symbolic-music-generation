@@ -455,7 +455,7 @@ def main():
         log_every_n_steps=4,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=0.25,  # Validate 4 times per epoch
+        val_check_interval=0.05,  # Validate 4 times per epoch
         precision="bf16-mixed",
         num_sanity_val_steps=0,
     )
