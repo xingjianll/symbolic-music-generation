@@ -44,7 +44,7 @@ from transformers.utils import auto_docstring, can_return_tuple
 from transformers.utils.generic import check_model_inputs, TransformersKwargs
 from .config import Qwen3Config
 from transformers.modeling_layers import GenericForQuestionAnswering
-
+import torch.nn.functional as F
 
 @use_kernel_forward_from_hub("RMSNorm")
 class Qwen3RMSNorm(nn.Module):
@@ -439,13 +439,31 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         return frequencies
 
+
+
+@auto_docstring
+class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
+    # No tied weights since we removed the embedding matrix
+    _tp_plan = {"regression_head": "colwise_rep"}
+    _pp_plan = {"regression_head": (["hidden_states"], ["logits"])}
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = Qwen3Model(config)
+        self.vocab_size = config.vocab_size
+        # LM head that outputs 4D positions directly
+        self.lm_head = nn.Linear(config.hidden_size, 4, bias=False)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
     def _compute_sinusoidal_encoding(self, position_tensors: torch.Tensor) -> torch.Tensor:
         """
         Compute sinusoidal encoding of 4D positions (same as create_rope_targets).
-        
+
         Args:
             position_tensors: (batch_size, seq_len, 4) tensor of [start_time, duration, pitch, velocity]
-            
+
         Returns:
             torch.Tensor: (batch_size, seq_len, head_dim) sinusoidal encodings
         """
@@ -483,23 +501,6 @@ class Qwen3Model(Qwen3PreTrainedModel):
         rotated[:, :, 1::2] = sin_vals[:, :, 1::2]  # Odd indices get sin
 
         return rotated
-
-
-@auto_docstring
-class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
-    # No tied weights since we removed the embedding matrix
-    _tp_plan = {"regression_head": "colwise_rep"}
-    _pp_plan = {"regression_head": (["hidden_states"], ["logits"])}
-
-    def __init__(self, config):
-        super().__init__(config)
-        self.model = Qwen3Model(config)
-        self.vocab_size = config.vocab_size
-        # LM head that outputs 4D positions directly
-        self.lm_head = nn.Linear(config.hidden_size, 4, bias=False)
-
-        # Initialize weights and apply final processing
-        self.post_init()
 
     @can_return_tuple
     @auto_docstring
