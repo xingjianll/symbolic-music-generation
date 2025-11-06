@@ -411,10 +411,10 @@ class Qwen3Model(Qwen3PreTrainedModel):
                              continuous 4D positions for each token
         
         Returns:
-            torch.Tensor: Raw frequencies with shape (seq_len, dim) where adjacent pairs 
+            torch.Tensor: Raw frequencies with shape (seq_len, head_dim) where adjacent pairs 
                          have the same frequency value (matching RoPE from paper)
         """
-        dim = self.config.hidden_size // self.config.num_attention_heads
+        head_dim = getattr(self.config, "head_dim", self.config.hidden_size // self.config.num_attention_heads)
         theta = 10000
 
         device = position_tensors[0].device
@@ -425,7 +425,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # Create frequency bands - for 4D positions, we use dim/8 unique frequencies
         # Each frequency will be used for a pair of dimensions (2D rotation)
         # Applied to all 4 position dimensions gives us dim/8 * 2 * 4 = dim
-        freq_bands = 1.0 / (theta ** (torch.arange(0, dim // 4, 2, device=device).float() / dim))
+        freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / head_dim))
         
         frequencies = []
         
@@ -434,16 +434,16 @@ class Qwen3Model(Qwen3PreTrainedModel):
             pos_d = all_positions[:, d:d+1]  # (seq_len, 1)
             
             # Apply frequency bands to this position dimension
-            dim_frequencies = pos_d * freq_bands  # (seq_len, dim//8)
+            dim_frequencies = pos_d * freq_bands  # (seq_len, unique_freqs)
             
             # Duplicate each frequency to create pairs (matching RoPE paper)
             # Each frequency is used for both elements of a 2D rotation
-            dim_frequencies = dim_frequencies.repeat_interleave(2, dim=-1)  # (seq_len, dim//4)
+            dim_frequencies = dim_frequencies.repeat_interleave(2, dim=-1)  # (seq_len, freq_per_dim)
             
             frequencies.append(dim_frequencies)
         
         # Concatenate frequencies from all 4 dimensions
-        frequencies = torch.cat(frequencies, dim=-1)  # (seq_len, dim)
+        frequencies = torch.cat(frequencies, dim=-1)  # (seq_len, head_dim)
         
         return frequencies
 
