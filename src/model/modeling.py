@@ -118,11 +118,8 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
-    print(f"DEBUG apply_rotary_pos_emb: q.shape={q.shape}, k.shape={k.shape}")
-    print(f"DEBUG apply_rotary_pos_emb: cos.shape={cos.shape}, sin.shape={sin.shape}")
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
-    print(f"DEBUG apply_rotary_pos_emb: after unsqueeze - cos.shape={cos.shape}, sin.shape={sin.shape}")
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
@@ -422,19 +419,13 @@ class Qwen3Model(Qwen3PreTrainedModel):
         device = position_tensors.device
         batch_size, seq_len = position_tensors.shape[:2]
         
-        # Debug prints
-        print(f"DEBUG rot_pos_emb: head_dim={head_dim}")
-        print(f"DEBUG rot_pos_emb: batch_size={batch_size}, seq_len={seq_len}")
-        
         # Position tensors already have shape (batch_size, seq_len, 4)
         all_positions = position_tensors
-        print(f"DEBUG rot_pos_emb: all_positions.shape={all_positions.shape}")
         
         # Create frequency bands - for 4D positions, we use head_dim/8 unique frequencies
         # Each frequency will be used for a pair of dimensions (2D rotation)
         # Applied to all 4 position dimensions gives us head_dim/8 * 2 * 4 = head_dim
         freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / head_dim))
-        print(f"DEBUG rot_pos_emb: freq_bands.shape={freq_bands.shape}")
         
         frequencies = []
         
@@ -454,7 +445,6 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # Concatenate frequencies from all 4 dimensions
         frequencies = torch.cat(frequencies, dim=-1)  # (batch_size, seq_len, head_dim)
         
-        print(f"DEBUG rot_pos_emb: final frequencies.shape={frequencies.shape}")
         return frequencies
 
 
