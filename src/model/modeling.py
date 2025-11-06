@@ -527,13 +527,34 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
         loss = None
         if labels is not None:
-            # MSE loss for RoPE-rotated representation regression
-            loss_fct = nn.MSELoss()
+            # Cosine similarity loss for RoPE-rotated representation
+            import torch.nn.functional as F
+            
             # Ensure labels have shape (batch_size, sequence_length, head_dim)
             if labels.dim() == 2:
                 raise ValueError(
                     "For RoPE regression, labels should have shape (batch_size, sequence_length, head_dim)")
-            loss = loss_fct(outputs_4d, labels)
+            
+            # Reshape to pairs for pairwise cosine similarity
+            pred_pairs = outputs_4d.view(batch_size, seq_len, head_dim // 2, 2)  # (batch, seq, 64, 2)
+            target_pairs = labels.view(batch_size, seq_len, head_dim // 2, 2)    # (batch, seq, 64, 2)
+            
+            # Flatten pairs for computation
+            pred_pairs_flat = pred_pairs.view(-1, 2)    # (batch*seq*64, 2)
+            target_pairs_flat = target_pairs.view(-1, 2) # (batch*seq*64, 2)
+            
+            # Mask out padded positions (where labels == -100)
+            mask = (target_pairs_flat != -100).all(dim=-1)  # (batch*seq*64,)
+            
+            if mask.any():
+                pred_masked = pred_pairs_flat[mask]   # (valid_pairs, 2)
+                target_masked = target_pairs_flat[mask] # (valid_pairs, 2)
+                
+                # Cosine similarity between corresponding 2D pairs
+                cos_sim = F.cosine_similarity(pred_masked, target_masked, dim=-1)
+                loss = (1 - cos_sim).mean()
+            else:
+                loss = torch.tensor(0.0, device=outputs_4d.device)
 
         return CausalLMOutputWithPast(
             loss=loss,
