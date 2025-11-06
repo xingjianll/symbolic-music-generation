@@ -86,7 +86,7 @@ class Qwen3MLP(nn.Module):
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
+    x2 = x[..., x.shape[-1] // 2:]
     return torch.cat((-x2, x1), dim=-1)
 
 
@@ -130,14 +130,14 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 
 def eager_attention_forward(
-    module: nn.Module,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attention_mask: Optional[torch.Tensor],
-    scaling: float,
-    dropout: float = 0.0,
-    **kwargs: Unpack[TransformersKwargs],
+        module: nn.Module,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        scaling: float,
+        dropout: float = 0.0,
+        **kwargs: Unpack[TransformersKwargs],
 ):
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
@@ -165,7 +165,7 @@ class Qwen3Attention(nn.Module):
         self.layer_idx = layer_idx
         self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.scaling = self.head_dim**-0.5
+        self.scaling = self.head_dim ** -0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
 
@@ -186,13 +186,13 @@ class Qwen3Attention(nn.Module):
         self.sliding_window = config.sliding_window if self.layer_type == "sliding_attention" else None
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: Optional[torch.Tensor],
-        past_key_values: Optional[Cache] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        **kwargs: Unpack[FlashAttentionKwargs],
+            self,
+            hidden_states: torch.Tensor,
+            position_embeddings: tuple[torch.Tensor, torch.Tensor],
+            attention_mask: Optional[torch.Tensor],
+            past_key_values: Optional[Cache] = None,
+            cache_position: Optional[torch.LongTensor] = None,
+            **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -243,15 +243,15 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         self.attention_type = config.layer_types[layer_idx]
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
-        **kwargs: Unpack[TransformersKwargs],
+            self,
+            hidden_states: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            position_ids: Optional[torch.LongTensor] = None,
+            past_key_values: Optional[Cache] = None,
+            use_cache: Optional[bool] = False,
+            cache_position: Optional[torch.LongTensor] = None,
+            position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+            **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -321,16 +321,16 @@ class Qwen3Model(Qwen3PreTrainedModel):
     @check_model_inputs
     @auto_docstring
     def forward(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        use_cache: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_tensors: torch.Tensor = None,
-        **kwargs: Unpack[TransformersKwargs],
+            self,
+            input_ids: Optional[torch.LongTensor] = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            position_ids: Optional[torch.LongTensor] = None,
+            past_key_values: Optional[Cache] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            use_cache: Optional[bool] = None,
+            cache_position: Optional[torch.LongTensor] = None,
+            position_tensors: torch.Tensor = None,
+            **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -397,11 +397,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
     def rot_pos_emb(self, position_tensors: torch.Tensor) -> torch.Tensor:
         """
         Generate rotary position embeddings for continuous 4D positions.
-        
+
         Args:
-            position_tensors: Tensor with shape (batch_size, seq_len, 4) containing 
+            position_tensors: Tensor with shape (batch_size, seq_len, 4) containing
                              continuous 4D positions for each batch item
-        
+
         Returns:
             torch.Tensor: Raw frequencies with shape (batch_size, seq_len, head_dim)
         """
@@ -410,33 +410,33 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         device = position_tensors.device
         batch_size, seq_len = position_tensors.shape[:2]
-        
+
         # Position tensors already have shape (batch_size, seq_len, 4)
         all_positions = position_tensors
-        
+
         # Create frequency bands - for 4D positions, we use head_dim/8 unique frequencies
         # Each frequency will be used for a pair of dimensions (2D rotation)
         # Applied to all 4 position dimensions gives us head_dim/8 * 2 * 4 = head_dim
         freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / head_dim))
-        
+
         frequencies = []
-        
+
         for d in range(4):  # For each of the 4 position dimensions
             # Get positions for this dimension: (batch_size, seq_len, 1)
-            pos_d = all_positions[:, :, d:d+1]
-            
+            pos_d = all_positions[:, :, d:d + 1]
+
             # Apply frequency bands to this position dimension
             dim_frequencies = pos_d * freq_bands  # (batch_size, seq_len, num_freqs)
-            
+
             # Duplicate each frequency to create pairs (matching RoPE paper)
             # Each frequency is used for both elements of a 2D rotation
             dim_frequencies = dim_frequencies.repeat_interleave(2, dim=-1)  # (batch_size, seq_len, head_dim//4)
-            
+
             frequencies.append(dim_frequencies)
-        
+
         # Concatenate frequencies from all 4 dimensions
         frequencies = torch.cat(frequencies, dim=-1)  # (batch_size, seq_len, head_dim)
-        
+
         return frequencies
 
 
@@ -460,18 +460,18 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
     @can_return_tuple
     @auto_docstring
     def forward(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        logits_to_keep: Union[int, torch.Tensor] = 0,
-        position_tensors: torch.Tensor = None,
-        **kwargs: Unpack[TransformersKwargs],
+            self,
+            input_ids: Optional[torch.LongTensor] = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            position_ids: Optional[torch.LongTensor] = None,
+            past_key_values: Optional[Cache] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            use_cache: Optional[bool] = None,
+            cache_position: Optional[torch.LongTensor] = None,
+            logits_to_keep: Union[int, torch.Tensor] = 0,
+            position_tensors: torch.Tensor = None,
+            **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -512,16 +512,16 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         # Get RoPE-rotated representation outputs
         raw_outputs = self.regression_head(hidden_states[:, slice_indices, :])
-        
+
         # Apply pairwise normalization to ensure unit vectors (as RoPE preserves norms)
         # Reshape to pairs: (batch, seq, head_dim) -> (batch, seq, head_dim//2, 2)
         batch_size, seq_len, head_dim = raw_outputs.shape
         pairs = raw_outputs.view(batch_size, seq_len, head_dim // 2, 2)
-        
+
         # Normalize each pair to unit vectors
         pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
         normalized_pairs = pairs / (pair_norms + 1e-8)  # Add small epsilon for numerical stability
-        
+
         # Reshape back to original format
         outputs_4d = normalized_pairs.view(batch_size, seq_len, head_dim)
 
@@ -531,7 +531,8 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             loss_fct = nn.MSELoss()
             # Ensure labels have shape (batch_size, sequence_length, head_dim)
             if labels.dim() == 2:
-                raise ValueError("For RoPE regression, labels should have shape (batch_size, sequence_length, head_dim)")
+                raise ValueError(
+                    "For RoPE regression, labels should have shape (batch_size, sequence_length, head_dim)")
             loss = loss_fct(outputs_4d, labels)
 
         return CausalLMOutputWithPast(
