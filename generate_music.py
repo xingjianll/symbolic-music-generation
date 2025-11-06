@@ -131,6 +131,7 @@ def generate_music(model, prompt_length: int = 50, total_length: int = 200, devi
             attention_mask[:, :seq_len] = 1
             
             # Forward pass
+            print(f"Input context last 3 positions: {padded_positions[0, seq_len-3:seq_len]}")
             outputs = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -138,14 +139,17 @@ def generate_music(model, prompt_length: int = 50, total_length: int = 200, devi
             )
             
             # Get the prediction for the next token (last non-padded position)
-            next_4d_prediction = outputs.logits[0, seq_len-1:seq_len]  # (1, 4)
+            next_4d_prediction = outputs.logits[0, seq_len-1]  # (4,) - single 4D prediction
             
             # Clamp to reasonable ranges
-            next_position = clamp_4d_positions(next_4d_prediction.unsqueeze(0))  # (1, 1, 4)
+            print(next_4d_prediction)
+            next_position = next_4d_prediction.unsqueeze(0).unsqueeze(0)  # (1, 1, 4)
+            next_position = clamp_4d_positions(next_position)
 
+            # Print the 4D values with annotations
             values = next_position[0, 0].cpu().numpy()
             print(f"Step {step}: time={values[0]:.2f}s, duration={values[1]:.2f}s, pitch={values[2]:.0f}, velocity={values[3]:.0f}")
-            
+
             # Append to sequence
             current_positions = torch.cat([current_positions, next_position], dim=1)
     

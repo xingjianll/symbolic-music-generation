@@ -560,41 +560,13 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
         loss = None
         if labels is not None:
-            # Compute sinusoidal encoding of predicted 4D positions
-            pred_sinusoidal = self._compute_sinusoidal_encoding(outputs_4d)
-            
-            # Labels should be precomputed sinusoidal encodings
+            # Standard MSE loss for 4D position regression  
+            loss_fct = nn.MSELoss()
+            # Ensure labels have shape (batch_size, sequence_length, 4)
             if labels.dim() == 2:
                 raise ValueError(
-                    "Labels should have shape (batch_size, sequence_length, head_dim) with sinusoidal encodings")
-            
-            # Flatten for pairwise cosine similarity
-            pred_flat = pred_sinusoidal.view(-1, pred_sinusoidal.size(-1))  # (batch*seq, head_dim)
-            target_flat = labels.view(-1, labels.size(-1))                  # (batch*seq, head_dim)
-            
-            # Mask out padded positions (where labels == -100)
-            mask = (target_flat != -100).all(dim=-1)  # (batch*seq,)
-            
-            if mask.any():
-                pred_masked = pred_flat[mask]     # (valid_tokens, head_dim)
-                target_masked = target_flat[mask] # (valid_tokens, head_dim)
-                
-                # Reshape to pairs and compute pairwise cosine similarity
-                head_dim = pred_masked.size(-1)
-                pred_pairs = pred_masked.view(-1, 2)    # (valid_tokens * head_dim//2, 2)
-                target_pairs = target_masked.view(-1, 2) # (valid_tokens * head_dim//2, 2)
-                
-                # Cosine similarity between corresponding 2D pairs
-                cos_sim = F.cosine_similarity(pred_pairs, target_pairs, dim=-1)
-                # Use 1 - cosine similarity as loss
-                loss = (1 - cos_sim).mean()
-                
-                # Debug: log statistics
-                if torch.rand(1).item() < 0.1:
-                    print(f"Pairwise cosine sim: 1-min={1-cos_sim.min():.3f}, 1-max={1-cos_sim.max():.3f}, 1-mean={1-cos_sim.mean():.3f}")
-                    print(f"1-cosine loss: {loss.item():.3f}")
-            else:
-                loss = torch.tensor(0.0, device=outputs_4d.device)
+                    "For 4D regression, labels should have shape (batch_size, sequence_length, 4)")
+            loss = loss_fct(outputs_4d, labels)
 
         return CausalLMOutputWithPast(
             loss=loss,
