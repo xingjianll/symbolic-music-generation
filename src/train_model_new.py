@@ -59,7 +59,9 @@ def _create_position_tensors(notes, score: ScoreSecond) -> torch.Tensor:
 
 def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> torch.Tensor:
     """
-    Create RoPE-rotated targets from 4D position tensors, vectorized like rot_pos_emb.
+    Create RoPE-rotated targets from 4D position tensors.
+    
+    For base vector [1, 0, 1, 0, ...], RoPE rotation gives [cos(f1), sin(f1), cos(f2), sin(f2), ...]
     
     Args:
         position_tensors: (seq_len, 4) tensor of [start_time, duration, pitch, velocity]
@@ -68,15 +70,9 @@ def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> 
     Returns:
         torch.Tensor: (seq_len, head_dim) rotated representations
     """
-    from src.model.modeling import apply_rotary_pos_emb
-    
     seq_len = position_tensors.shape[0]
     device = position_tensors.device
     theta = 10000
-    
-    # Create base vector: [1, 0, 1, 0, ...] pattern for all positions
-    base_pattern = torch.tensor([1.0, 0.0], device=device)
-    base_vector = base_pattern.repeat(head_dim // 2).unsqueeze(0).repeat(seq_len, 1)  # (seq_len, head_dim)
     
     # Create frequency bands (same calculation as rot_pos_emb)
     freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / head_dim))
@@ -97,19 +93,17 @@ def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> 
     # Concatenate frequencies from all 4 dimensions
     all_freqs = torch.cat(frequencies, dim=-1)  # (seq_len, head_dim)
     
-    # Convert frequencies to cos/sin (same as in Qwen3Model forward)
+    # For base vector [1, 0, 1, 0, ...], RoPE gives [cos, sin, cos, sin, ...]
+    # So we just need to interleave cos and sin values
     cos_vals = all_freqs.cos()  # (seq_len, head_dim)
     sin_vals = all_freqs.sin()  # (seq_len, head_dim)
     
-    # Reshape for apply_rotary_pos_emb: (1, 1, seq_len, head_dim)
-    q = base_vector.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, head_dim)
-    k = q.clone()  # dummy key
+    # Create the rotated representation: [cos(f1), sin(f1), cos(f2), sin(f2), ...]
+    rotated = torch.zeros_like(all_freqs)
+    rotated[:, 0::2] = cos_vals[:, 0::2]  # Even indices get cos
+    rotated[:, 1::2] = sin_vals[:, 1::2]  # Odd indices get sin
     
-    # Apply RoPE rotation using existing function
-    rotated_q, _ = apply_rotary_pos_emb(q, k, cos_vals, sin_vals, unsqueeze_dim=1)
-    
-    # Extract the rotated vectors: (1, 1, seq_len, head_dim) -> (seq_len, head_dim)
-    return rotated_q.squeeze(0).squeeze(0)
+    return rotated
 
 
 def process_single_file(file_path: Path) -> np.ndarray:
