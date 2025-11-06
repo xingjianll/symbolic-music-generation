@@ -74,10 +74,12 @@ class MidiDataset4D(Dataset):
             try:
                 # Load MIDI file using symusic
                 score = symusic.Score.from_file(str(file_path))
-                score = score.to("second")
 
-                # Use preprocessing functions to clean up the score
+                # Use preprocessing functions to clean up the score (in tick format)
                 merge_score_tracks(score)
+                
+                # Convert to seconds after preprocessing
+                score = score.to("second")
                 
                 # Extract notes from the merged track
                 if not score.tracks or len(score.tracks[0].notes) == 0:
