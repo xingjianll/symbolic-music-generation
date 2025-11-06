@@ -399,10 +399,10 @@ def main():
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4DStreaming(train_files, max_seq_len=MAX_SEQ_LEN)  # Start with subset
+    train_dataset = MidiDataset4DStreaming(train_files[:1000], max_seq_len=MAX_SEQ_LEN)  # Start with subset
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4DStreaming(val_files, max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4DStreaming(train_files[:100], max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
