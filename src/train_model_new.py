@@ -167,6 +167,8 @@ class MidiDataset4D(Dataset):
         total_len = all_position_tensors.shape[0]
 
         for i in range(0, total_len, self.max_seq_len):
+            print(total_len // self.max_seq_len)
+            print(i // self.max_seq_len)
             end_idx = min(i + self.max_seq_len, total_len)
             chunk = all_position_tensors[i:end_idx]
             original_len = chunk.shape[0]
@@ -235,11 +237,11 @@ def main():
     data_dir = project_dir / "data" / "aria-midi-v1-unique-ext" / "data"
 
     # Get all MIDI files
-    all_files = list(data_dir.glob("**/*.mid"))
+    all_files = list(data_dir.glob("**/*.mid"))[:10000]
     print(f"Found {len(all_files)} MIDI files")
 
     # Split into train/val
-    train_files, val_files = train_test_split(all_files, test_size=0.1, random_state=42)
+    train_files, val_files = train_test_split(all_files, test_size=0.05, random_state=42)
     print(f"Train: {len(train_files)}, Val: {len(val_files)}")
 
     # Create datasets (no tokenizer needed)
@@ -299,7 +301,6 @@ def main():
         callbacks=[checkpoint_callback],
         val_check_interval=0.25,  # Validate 4 times per epoch
         precision="bf16-mixed",
-        accumulate_grad_batches=4,  # Effective batch size = 8 * 4 = 32
     )
 
     # Train
