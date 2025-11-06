@@ -426,12 +426,16 @@ def main():
     wandb_logger = WandbLogger(project="symbolic-music-4d", log_model=True)
     print("here")
 
+    steps_per_epoch = len(train_loader)
+    steps_per_half_epoch = steps_per_epoch // 2
     checkpoint_callback = ModelCheckpoint(
         dirpath=project_dir / "checkpoints",
-        filename="qwen-4d-{epoch:02d}-{val_loss:.4f}",
+        filename="qwen-4d-{epoch:02d}-{step:05d}-{val_loss:.4f}",
         monitor='val_loss',
-        save_top_k=4,
+        save_top_k=2,
         save_last=True,
+        mode='min',
+        every_n_train_steps=steps_per_half_epoch,
     )
 
     # Create dummy tokenizer object for MidiQwenNew compatibility
