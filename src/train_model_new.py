@@ -115,8 +115,8 @@ def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> 
     return torch.stack(targets)  # (seq_len, head_dim)
 
 
-def process_single_file(file_path: Path) -> torch.Tensor:
-    """Process a single MIDI file and return position tensors. For multiprocessing."""
+def process_single_file(file_path: Path) -> np.ndarray:
+    """Process a single MIDI file and return position tensors as numpy array. For multiprocessing."""
     try:
         # Load MIDI file using symusic
         score = symusic.Score.from_file(str(file_path))
@@ -144,7 +144,8 @@ def process_single_file(file_path: Path) -> torch.Tensor:
         # Create 4D position tensors [start_time, duration, pitch, velocity]
         position_tensors = _create_position_tensors(all_notes, score)
         
-        return position_tensors
+        # Convert to numpy for safe multiprocessing serialization
+        return position_tensors.numpy()
         
     except Exception as e:
         print(f"Failed to process {file_path}: {e}")
@@ -179,11 +180,12 @@ class MidiDataset4D(Dataset):
         with Pool(processes=max_processes) as pool:
             results = pool.map(process_single_file, self.files)
         
-        # Filter out None results (failed files)
-        all_tensors = [tensor for tensor in results if tensor is not None]
+        # Filter out None results (failed files) and convert back to tensors
+        all_arrays = [array for array in results if array is not None]
         
-        # Concatenate all pieces
-        if all_tensors:
+        # Convert numpy arrays back to tensors and concatenate
+        if all_arrays:
+            all_tensors = [torch.from_numpy(array) for array in all_arrays]
             concatenated = torch.cat(all_tensors, dim=0)
             print(f"Successfully processed {len(all_tensors)}/{len(self.files)} files")
             print(f"Concatenated into {concatenated.shape[0]} total vectors")
