@@ -326,7 +326,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs()
+    @check_model_inputs
     @auto_docstring
     def forward(
         self,
@@ -414,7 +414,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
             torch.Tensor: Raw frequencies with shape (seq_len, dim) where adjacent pairs 
                          have the same frequency value (matching RoPE from paper)
         """
-        dim = self.config.hidden_size // self.config.num_heads
+        dim = self.config.hidden_size // self.config.num_attention_heads
         theta = 10000
 
         device = position_tensors[0].device
