@@ -270,7 +270,7 @@ def main():
     train_dataset = MidiDataset4D(train_files[:1000], max_seq_len=MAX_SEQ_LEN)  # Start with subset
     
     print("Creating val dataset...")
-    val_dataset = MidiDataset4D(val_files[:100], max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4D(train_files[:100], max_seq_len=MAX_SEQ_LEN)
     
     # Create dataloaders
     train_loader = DataLoader(
@@ -316,7 +316,7 @@ def main():
         max_epochs=EPOCHS,
         logger=wandb_logger,
         gradient_clip_val=1.0,
-        log_every_n_steps=10,
+        log_every_n_steps=4,
         accelerator="auto",
         callbacks=[checkpoint_callback],
         val_check_interval=0.25,  # Validate 4 times per epoch
