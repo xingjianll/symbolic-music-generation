@@ -402,7 +402,7 @@ def main():
     train_dataset = MidiDataset4DStreaming(train_files, max_seq_len=MAX_SEQ_LEN)  # Start with subset
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4DStreaming(val_files, max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4D(val_files, max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -451,11 +451,11 @@ def main():
     trainer = pl.Trainer(
         max_epochs=EPOCHS,
         logger=wandb_logger,
-        gradient_clip_val=1.0,
+        gradient_clip_val=5.0,
         log_every_n_steps=4,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=0.05,  # Validate 4 times per epoch
+        val_check_interval=0.1,
         precision="bf16-mixed",
         num_sanity_val_steps=0,
     )
