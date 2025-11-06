@@ -554,11 +554,14 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                 cos_sim = F.cosine_similarity(pred_masked, target_masked, dim=-1)
                 # Use arccos to ensure non-negative loss that can't cancel out
                 # arccos(cos_sim) gives angle between vectors in [0, π]
-                loss = torch.arccos(torch.clamp(cos_sim, -1.0, 1.0)).mean()
+                # More aggressive clamping to prevent NaN from floating point errors
+                cos_sim_clamped = torch.clamp(cos_sim, -0.99999, 0.99999)
+                loss = torch.arccos(cos_sim_clamped).mean()
 
                 # Debug: log statistics
                 if torch.rand(1).item() < 0.1:  # Log 1% of the time
                     print(f"Cosine sim stats: min={cos_sim.min():.3f}, max={cos_sim.max():.3f}, mean={cos_sim.mean():.3f}")
+                    print(f"Arccos loss: {loss.item():.3f}")
             else:
                 loss = torch.tensor(0.0, device=outputs_4d.device)
 
