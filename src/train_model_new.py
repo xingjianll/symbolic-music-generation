@@ -1,8 +1,6 @@
 from pathlib import Path
 import os
 from typing import List, Dict, Any, Tuple
-from multiprocessing import Pool, cpu_count
-from functools import partial
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
@@ -106,8 +104,9 @@ def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> 
     return rotated
 
 
-def process_single_file(file_path: Path) -> np.ndarray:
-    """Process a single MIDI file and return position tensors as numpy array. For multiprocessing."""
+
+def process_single_file(file_path: Path) -> torch.Tensor:
+    """Process a single MIDI file and return position tensors."""
     try:
         # Load MIDI file using symusic
         score = symusic.Score.from_file(str(file_path))
@@ -135,8 +134,7 @@ def process_single_file(file_path: Path) -> np.ndarray:
         # Create 4D position tensors [start_time, duration, pitch, velocity]
         position_tensors = _create_position_tensors(all_notes, score)
         
-        # Convert to numpy for safe multiprocessing serialization
-        return position_tensors.numpy()
+        return position_tensors
         
     except Exception as e:
         print(f"Failed to process {file_path}: {e}")
@@ -162,21 +160,21 @@ class MidiDataset4D(Dataset):
         print(f"Created {len(self.chunks)} chunks for training")
         
     def _load_and_concatenate_files(self):
-        """Load all MIDI files and concatenate into one big sequence using parallel processing."""
-        # Limit processes to avoid overwhelming the system
-        max_processes = min(cpu_count(), 16)  # Cap at 16 processes
-        print(f"Processing {len(self.files)} files using {max_processes} processes...")
+        """Load all MIDI files and concatenate into one big sequence."""
+        all_tensors = []
         
-        # Use multiprocessing to process files in parallel
-        with Pool(processes=max_processes) as pool:
-            results = pool.map(process_single_file, self.files)
+        print(f"Processing {len(self.files)} files sequentially...")
+        for i, file_path in enumerate(self.files):
+            position_tensors = process_single_file(file_path)
+            
+            if position_tensors is not None:
+                all_tensors.append(position_tensors)
+            
+            if i % 50 == 0:
+                print(f"Processed {i}/{len(self.files)} files")
         
-        # Filter out None results (failed files) and convert back to tensors
-        all_arrays = [array for array in results if array is not None]
-        
-        # Convert numpy arrays back to tensors and concatenate
-        if all_arrays:
-            all_tensors = [torch.from_numpy(array) for array in all_arrays]
+        # Concatenate all pieces
+        if all_tensors:
             concatenated = torch.cat(all_tensors, dim=0)
             print(f"Successfully processed {len(all_tensors)}/{len(self.files)} files")
             print(f"Concatenated into {concatenated.shape[0]} total vectors")
@@ -216,7 +214,7 @@ class MidiDataset4D(Dataset):
         print(f"Processing {num_chunks} chunks in batches of 10 on GPU...")
         batch_size = 10
         for i in range(0, num_chunks, batch_size):
-            print(i*batch_size)
+            print(i)
             end_idx = min(i + batch_size, num_chunks)
 
             # Process batch of chunks
