@@ -16,9 +16,9 @@
 
 from typing import Optional
 
-from ...configuration_utils import PreTrainedConfig, layer_type_validation
-from ...modeling_rope_utils import RopeParameters, rope_config_validation, standardize_rope_params
-from ...utils import logging
+from transformers.configuration_utils import PreTrainedConfig, layer_type_validation
+from transformers.modeling_rope_utils import RopeParameters, rope_config_validation, standardize_rope_params
+from transformers.utils import logging
 
 
 logger = logging.get_logger(__name__)

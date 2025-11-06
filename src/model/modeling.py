@@ -40,9 +40,10 @@ from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_u
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.utils import auto_docstring, can_return_tuple
-from .generic import check_model_inputs, TransformersKwargs
+
+from transformers.utils.generic import check_model_inputs, TransformersKwargs
 from .config import Qwen3Config
-from .modeling_layers import GenericForQuestionAnswering
+from transformers.modeling_layers import GenericForQuestionAnswering
 
 
 @use_kernel_forward_from_hub("RMSNorm")
