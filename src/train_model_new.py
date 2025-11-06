@@ -1,6 +1,8 @@
 from pathlib import Path
 import os
 from typing import List, Dict, Any, Tuple
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
@@ -112,6 +114,43 @@ def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> 
     
     return torch.stack(targets)  # (seq_len, head_dim)
 
+
+def process_single_file(file_path: Path) -> torch.Tensor:
+    """Process a single MIDI file and return position tensors. For multiprocessing."""
+    try:
+        # Load MIDI file using symusic
+        score = symusic.Score.from_file(str(file_path))
+
+        # Use preprocessing functions to clean up the score (in tick format)
+        merge_score_tracks(score)
+        
+        # Convert to seconds after preprocessing
+        score = score.to("second")
+        
+        # Extract notes from the merged track
+        if not score.tracks or len(score.tracks[0].notes) == 0:
+            return None
+            
+        track = score.tracks[0]
+        all_notes = list(track.notes)
+        
+        # Skip very short pieces
+        if len(all_notes) < 5:
+            return None
+        
+        # Sort notes by start time
+        all_notes.sort(key=lambda x: x.start)
+        
+        # Create 4D position tensors [start_time, duration, pitch, velocity]
+        position_tensors = _create_position_tensors(all_notes, score)
+        
+        return position_tensors
+        
+    except Exception as e:
+        print(f"Failed to process {file_path}: {e}")
+        return None
+
+
 class MidiDataset4D(Dataset):
     """Dataset that concatenates all MIDI files and chunks for pretraining."""
     
@@ -131,50 +170,24 @@ class MidiDataset4D(Dataset):
         print(f"Created {len(self.chunks)} chunks for training")
         
     def _load_and_concatenate_files(self):
-        """Load all MIDI files and concatenate into one big sequence."""
-        all_tensors = []
+        """Load all MIDI files and concatenate into one big sequence using parallel processing."""
+        print(f"Processing {len(self.files)} files using {cpu_count()} CPU cores...")
         
-        for file_path in self.files:
-            try:
-                # Load MIDI file using symusic
-                score = symusic.Score.from_file(str(file_path))
-
-                # Use preprocessing functions to clean up the score (in tick format)
-                merge_score_tracks(score)
-                
-                # Convert to seconds after preprocessing
-                score = score.to("second")
-                
-                # Extract notes from the merged track
-                if not score.tracks or len(score.tracks[0].notes) == 0:
-                    continue
-                    
-                track = score.tracks[0]
-                all_notes = list(track.notes)
-                
-                # Skip very short pieces
-                if len(all_notes) < 5:
-                    continue
-                
-                # Sort notes by start time
-                all_notes.sort(key=lambda x: x.start)
-                
-                # Create 4D position tensors [start_time, duration, pitch, velocity]
-                position_tensors = _create_position_tensors(all_notes, score)
-                
-                # Add this piece to the concatenated sequence
-                all_tensors.append(position_tensors)
-                
-            except Exception as e:
-                print(f"Failed to process {file_path}: {e}")
-                continue
+        # Use multiprocessing to process files in parallel
+        with Pool(processes=cpu_count()) as pool:
+            results = pool.map(process_single_file, self.files)
+        
+        # Filter out None results (failed files)
+        all_tensors = [tensor for tensor in results if tensor is not None]
         
         # Concatenate all pieces
         if all_tensors:
             concatenated = torch.cat(all_tensors, dim=0)
-            print(f"Concatenated {len(all_tensors)} files into {concatenated.shape[0]} total vectors")
+            print(f"Successfully processed {len(all_tensors)}/{len(self.files)} files")
+            print(f"Concatenated into {concatenated.shape[0]} total vectors")
             return concatenated
         else:
+            print("No files were successfully processed!")
             return torch.tensor([], dtype=torch.float32).reshape(0, 4)
     
     def _create_chunks(self, all_position_tensors):
