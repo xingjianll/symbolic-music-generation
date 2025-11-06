@@ -235,10 +235,13 @@ class MidiDataset4DStreaming(Dataset):
         # Create input_ids and labels
         input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
         
-        # Labels are next 4D positions (not RoPE targets)
-        labels = chunk[1:].clone()  # Next position prediction
+        # Labels are sinusoidal encodings of next 4D positions
+        next_positions = chunk[1:].clone()  # Next position prediction
         last_position = chunk[-1:].clone()
-        labels = torch.cat([labels, last_position], dim=0)
+        next_positions = torch.cat([next_positions, last_position], dim=0)
+        
+        # Convert 4D positions to sinusoidal encodings
+        labels = create_rope_targets(next_positions)  # (seq_len, head_dim=128)
 
         if original_len < self.max_seq_len:
             labels[original_len:] = -100
@@ -342,11 +345,13 @@ class MidiDataset4D(Dataset):
             # Create input_ids (all zeros since vocab_size = 1)
             input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
 
-            # Create labels (next 4D position prediction)
-            labels = chunk[1:].clone()  # Next position prediction
-            # Pad labels to same length as chunk
+            # Create labels (sinusoidal encodings of next 4D positions)
+            next_positions = chunk[1:].clone()  # Next position prediction
             last_position = chunk[-1:].clone()
-            labels = torch.cat([labels, last_position], dim=0)
+            next_positions = torch.cat([next_positions, last_position], dim=0)
+            
+            # Convert 4D positions to sinusoidal encodings
+            labels = create_rope_targets(next_positions)  # (seq_len, head_dim=128)
 
             # Set padded label positions to -100 (ignore in loss)
             if original_len < self.max_seq_len:
