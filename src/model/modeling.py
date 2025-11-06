@@ -553,6 +553,10 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                 # Cosine similarity between corresponding 2D pairs
                 cos_sim = F.cosine_similarity(pred_masked, target_masked, dim=-1)
                 loss = (1 - cos_sim).mean()
+
+                # Debug: log statistics
+                if torch.rand(1).item() < 0.1:  # Log 1% of the time
+                    print(f"Cosine sim stats: min={cos_sim.min():.3f}, max={cos_sim.max():.3f}, mean={cos_sim.mean():.3f}")
             else:
                 loss = torch.tensor(0.0, device=outputs_4d.device)
 
