@@ -206,28 +206,32 @@ class MidiDataset4D(Dataset):
             pad_token = torch.tensor([last_time, 0.0, 2, 0])
             all_position_tensors = torch.cat([all_position_tensors, pad_token.repeat(pad_len, 1)])
         
-        # Split into chunks and create RoPE targets
+        # Split into chunks and create ALL RoPE targets at once
         chunks = all_position_tensors.view(-1, self.max_seq_len, 4)
-        self.chunks = []
+        num_chunks = chunks.shape[0]
         
-        for i, chunk in enumerate(chunks):
-            rope_targets = create_rope_targets(chunk)
-            
-            # Create labels, attention mask, input_ids
-            labels = torch.cat([rope_targets[1:], rope_targets[-1:]])
-            attention_mask = torch.ones(self.max_seq_len, dtype=torch.long)
-            input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
-            
-            # Mask padding in last chunk
-            if needs_padding and i == len(chunks) - 1:
-                attention_mask[remainder:] = 0
-                labels[remainder:] = -100
-            
+        # Batch create RoPE targets for all chunks simultaneously
+        all_rope_targets = create_rope_targets(all_position_tensors)  # (total_padded_len, head_dim)
+        rope_targets_chunked = all_rope_targets.view(num_chunks, self.max_seq_len, -1)  # (num_chunks, seq_len, head_dim)
+        
+        # Vectorized creation of labels, masks, input_ids
+        labels_batch = torch.cat([rope_targets_chunked[:, 1:], rope_targets_chunked[:, -1:]], dim=1)  # (num_chunks, seq_len, head_dim)
+        attention_masks = torch.ones(num_chunks, self.max_seq_len, dtype=torch.long)
+        input_ids_batch = torch.zeros(num_chunks, self.max_seq_len, dtype=torch.long)
+        
+        # Handle padding mask for last chunk only
+        if needs_padding:
+            attention_masks[-1, remainder:] = 0
+            labels_batch[-1, remainder:] = -100
+        
+        # Convert to list of dictionaries
+        self.chunks = []
+        for i in range(num_chunks):
             self.chunks.append({
-                'input_ids': input_ids,
-                'position_tensors': chunk,
-                'labels': labels,
-                'attention_mask': attention_mask
+                'input_ids': input_ids_batch[i],
+                'position_tensors': chunks[i],
+                'labels': labels_batch[i],
+                'attention_mask': attention_masks[i]
             })
 
     def __len__(self):
