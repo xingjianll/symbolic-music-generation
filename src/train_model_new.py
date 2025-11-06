@@ -171,10 +171,12 @@ class MidiDataset4D(Dataset):
         
     def _load_and_concatenate_files(self):
         """Load all MIDI files and concatenate into one big sequence using parallel processing."""
-        print(f"Processing {len(self.files)} files using {cpu_count()} CPU cores...")
+        # Limit processes to avoid overwhelming the system
+        max_processes = min(cpu_count(), 16)  # Cap at 16 processes
+        print(f"Processing {len(self.files)} files using {max_processes} processes...")
         
         # Use multiprocessing to process files in parallel
-        with Pool(processes=cpu_count()) as pool:
+        with Pool(processes=max_processes) as pool:
             results = pool.map(process_single_file, self.files)
         
         # Filter out None results (failed files)
