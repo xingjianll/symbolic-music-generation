@@ -269,3 +269,69 @@ class MidiAria(pl.LightningModule):
             ]
         )
         self.model = get_peft_model(self.model, config)
+
+class MidiQwenNew(pl.LightningModule):
+    def __init__(self, tokenizer, dataloader, lr=5e-5, warmup_steps=1000):
+        super().__init__()
+        self.save_hyperparameters()
+
+        config = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B", trust_remote_code=True)
+        config.hidden_size = 512  # 1024
+        config.num_hidden_layers = 14  # 28
+        config.num_attention_heads = 8  # 16
+        config.num_key_value_heads = 8
+        config.intermediate_size = 2048  # 3072
+        config.max_position_embeddings = CONTEXT_SIZE
+        # config.bos_token_id = tokenizer["BOS_None"]
+        # config.eos_token_id = tokenizer["EOS_None"]
+        # config.pad_token_id = tokenizer.pad_token_id
+        # Import and use our custom Qwen3ForCausalLM model
+        from src.model.modeling import Qwen3ForCausalLM
+        self.model = Qwen3ForCausalLM(config)
+        self.lr = lr
+        self.warmup_steps = warmup_steps
+        self.dataloader = dataloader
+
+
+    def forward(self, input_ids, attention_mask=None, labels=None, position_tensors=None):
+        # Note: position_tensors should be a list of tensors with shape (num_tokens, 4)
+        return self.model(
+            input_ids=input_ids, 
+            attention_mask=attention_mask, 
+            labels=labels,
+            position_tensors=position_tensors
+        )
+
+    def training_step(self, batch, batch_idx):
+        outputs = self(**batch)
+        loss = outputs.loss
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        outputs = self(**batch)
+        val_loss = outputs.loss
+        self.log("val_loss", val_loss, prog_bar=True, sync_dist=True)
+        return val_loss
+
+    def configure_optimizers(self):
+        from src.train import EPOCHS
+
+        steps_per_epoch = len(self.dataloader)
+        optimizer, scheduler = _get_optim(
+            lr=self.lr,
+            model=self,
+            num_epochs=EPOCHS,
+            steps_per_epoch=steps_per_epoch,
+            warmup=self.warmup_steps,
+            end_ratio=0.1,
+        )
+
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
+
+    def load_checkpoint_expanding_pos_emb(self, checkpoint_path):
+        """Load checkpoint and expand positional embeddings if needed"""
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        state_dict = checkpoint["state_dict"]
+
+        self.load_state_dict(state_dict, strict=False)

@@ -379,7 +379,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)
 
         hidden_states = inputs_embeds
-        position_embeddings = self.rot_pos_emb(position_tensors)
+        rotary_pos_emb = self.rot_pos_emb(position_tensors)
+        # Convert frequencies to cos and sin for RoPE
+        position_embeddings = (rotary_pos_emb.cos(), rotary_pos_emb.sin())
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
@@ -416,8 +418,6 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         device = position_tensors[0].device
         
-        # Calculate total tokens (which should equal seq_len)
-
         # Concatenate all position tensors
         all_positions = torch.cat(position_tensors, dim=0)  # (seq_len, 4)
         
@@ -476,6 +476,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
+        position_tensors: list[torch.Tensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         r"""
@@ -508,6 +509,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             cache_position=cache_position,
+            position_tensors=position_tensors,
             **kwargs,
         )
 
