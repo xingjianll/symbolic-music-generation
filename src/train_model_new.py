@@ -198,39 +198,33 @@ class MidiDataset4D(Dataset):
         """Split concatenated sequence into fixed-size chunks."""
         total_len = all_position_tensors.shape[0]
         
-        for i in range(0, total_len, self.max_seq_len):
-            end_idx = min(i + self.max_seq_len, total_len)
-            chunk = all_position_tensors[i:end_idx]
-            original_len = chunk.shape[0]
+        # Check if last chunk needs padding
+        remainder = total_len % self.max_seq_len
+        needs_padding = remainder != 0
+        
+        # Add padding to original tensor if needed
+        if needs_padding:
+            pad_len = self.max_seq_len - remainder
+            last_time = all_position_tensors[-1, 0].item()
+            pad_token = torch.tensor([last_time, 0.0, 2, 0])
+            all_position_tensors = torch.cat([all_position_tensors, pad_token.repeat(pad_len, 1)])
+        
+        # Split into chunks and create RoPE targets
+        chunks = all_position_tensors.view(-1, self.max_seq_len, 4)
+        self.chunks = []
+        
+        for i, chunk in enumerate(chunks):
+            rope_targets = create_rope_targets(chunk)
             
-            # Create attention mask (1 for real tokens, 0 for padding)
+            # Create labels, attention mask, input_ids
+            labels = torch.cat([rope_targets[1:], rope_targets[-1:]])
             attention_mask = torch.ones(self.max_seq_len, dtype=torch.long)
-            
-            # Pad chunk to max_seq_len if it's the last chunk and shorter
-            if chunk.shape[0] < self.max_seq_len:
-                pad_len = self.max_seq_len - chunk.shape[0]
-                last_time = chunk[-1, 0].item()
-                pad_tensor = torch.tensor([last_time, 0.0, 2, 0]).repeat(pad_len, 1)
-                chunk = torch.cat([chunk, pad_tensor], dim=0)
-                
-                # Mask the padded positions
-                attention_mask[original_len:] = 0
-            
-            # Create input_ids (all zeros since vocab_size = 1)
             input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
             
-            # Create RoPE-rotated targets instead of raw 4D vectors
-            rope_targets = create_rope_targets(chunk)  # (seq_len, head_dim=128)
-            
-            # Create labels (next RoPE target prediction)
-            labels = rope_targets[1:].clone()  # Next rope target prediction
-            # Pad labels to same length as chunk
-            last_target = rope_targets[-1:].clone()
-            labels = torch.cat([labels, last_target], dim=0)
-            
-            # Set padded label positions to -100 (ignore in loss)
-            if original_len < self.max_seq_len:
-                labels[original_len:] = -100  # -1 because labels are shifted
+            # Mask padding in last chunk
+            if needs_padding and i == len(chunks) - 1:
+                attention_mask[remainder:] = 0
+                labels[remainder:] = -100
             
             self.chunks.append({
                 'input_ids': input_ids,
