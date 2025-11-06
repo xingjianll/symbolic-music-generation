@@ -535,31 +535,25 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                 raise ValueError(
                     "For RoPE regression, labels should have shape (batch_size, sequence_length, head_dim)")
             
-            # Reshape to pairs for pairwise cosine similarity
-            pred_pairs = outputs_4d.view(batch_size, seq_len, head_dim // 2, 2)  # (batch, seq, 64, 2)
-            target_pairs = labels.view(batch_size, seq_len, head_dim // 2, 2)    # (batch, seq, 64, 2)
-            
-            # Flatten pairs for computation
-            pred_pairs_flat = pred_pairs.view(-1, 2)    # (batch*seq*64, 2)
-            target_pairs_flat = target_pairs.view(-1, 2) # (batch*seq*64, 2)
+            # Flatten for full vector cosine similarity
+            pred_flat = outputs_4d.view(-1, outputs_4d.size(-1))  # (batch*seq, head_dim)
+            target_flat = labels.view(-1, labels.size(-1))       # (batch*seq, head_dim)
             
             # Mask out padded positions (where labels == -100)
-            mask = (target_pairs_flat != -100).all(dim=-1)  # (batch*seq*64,)
+            mask = (target_flat != -100).all(dim=-1)  # (batch*seq,)
             
             if mask.any():
-                pred_masked = pred_pairs_flat[mask]   # (valid_pairs, 2)
-                target_masked = target_pairs_flat[mask] # (valid_pairs, 2)
+                pred_masked = pred_flat[mask]   # (valid_tokens, head_dim)
+                target_masked = target_flat[mask] # (valid_tokens, head_dim)
                 
-                # Cosine similarity between corresponding 2D pairs
+                # Cosine similarity between full 128D vectors
                 cos_sim = F.cosine_similarity(pred_masked, target_masked, dim=-1)
                 # Use arccos to ensure non-negative loss that can't cancel out
-                # arccos(cos_sim) gives angle between vectors in [0, π]
-                # More aggressive clamping to prevent NaN from floating point errors
                 cos_sim_clamped = torch.clamp(cos_sim, -0.99999, 0.99999)
                 loss = torch.arccos(cos_sim_clamped).mean()
 
                 # Debug: log statistics
-                if torch.rand(1).item() < 0.1:  # Log 1% of the time
+                if torch.rand(1).item() < 0.1:  # Log 10% of the time
                     print(f"Cosine sim stats: min={cos_sim.min():.3f}, max={cos_sim.max():.3f}, mean={cos_sim.mean():.3f}")
                     print(f"Arccos loss: {loss.item():.3f}")
             else:
