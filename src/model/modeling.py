@@ -310,7 +310,8 @@ class Qwen3Model(Qwen3PreTrainedModel):
         self.vocab_size = config.vocab_size
         self.config = config
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        # Single learnable vector for vocab_size=1 case
+        self.embed_vector = nn.Parameter(torch.randn(config.hidden_size))
         self.layers = nn.ModuleList(
             [Qwen3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
@@ -342,7 +343,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+            # For vocab_size=1, expand the single embed vector to match batch and sequence dimensions
+            batch_size, seq_len = input_ids.shape
+            inputs_embeds = self.embed_vector.unsqueeze(0).unsqueeze(0).expand(batch_size, seq_len, -1)
 
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache(config=self.config)
@@ -446,15 +449,16 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
 @auto_docstring
 class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
-    _tied_weights_keys = ["lm_head.weight"]
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+    # No tied weights since we removed the embedding matrix
+    _tp_plan = {"regression_head": "colwise_rep"}
+    _pp_plan = {"regression_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # Regression head that outputs a 4D vector
+        self.regression_head = nn.Linear(config.hidden_size, 4, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -510,15 +514,21 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
+        # Get 4D regression outputs instead of vocabulary logits
+        outputs_4d = self.regression_head(hidden_states[:, slice_indices, :])
 
         loss = None
         if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+            # MSE loss for 4D regression
+            loss_fct = nn.MSELoss()
+            # Ensure labels have shape (batch_size, sequence_length, 4)
+            if labels.dim() == 2:
+                raise ValueError("For 4D regression, labels should have shape (batch_size, sequence_length, 4)")
+            loss = loss_fct(outputs_4d, labels)
 
         return CausalLMOutputWithPast(
             loss=loss,
-            logits=logits,
+            logits=outputs_4d,  # Now contains 4D regression outputs
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
