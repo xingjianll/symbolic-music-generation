@@ -17,7 +17,7 @@ from src.utils import CONTEXT_SIZE, merge_score_tracks, handle_tempos, handle_ke
 from src.model.model import MidiQwenNew
 
 
-EPOCHS = 12
+EPOCHS = 24
 BATCH_SIZE = 8  # Adjust based on GPU memory
 MAX_SEQ_LEN = CONTEXT_SIZE
 
@@ -232,7 +232,7 @@ def main():
     dummy_tokenizer = DummyTokenizer()
     
     # Create model
-    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=5e-5, warmup_steps=1000)
+    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=3e-4, warmup_steps=1000)
     
     # Create trainer
     trainer = pl.Trainer(
