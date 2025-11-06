@@ -450,9 +450,8 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         super().__init__(config)
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
-        # Regression head that outputs RoPE-rotated representation (head_dim dimensions)
-        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        self.regression_head = nn.Linear(config.hidden_size, head_dim, bias=False)
+        # LM head that outputs 4D positions directly
+        self.lm_head = nn.Linear(config.hidden_size, 4, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -510,58 +509,22 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        # Get RoPE-rotated representation outputs
-        raw_outputs = self.regression_head(hidden_states[:, slice_indices, :])
-
-        # Apply pairwise normalization to ensure unit vectors (as RoPE preserves norms)
-        # Reshape to pairs: (batch, seq, head_dim) -> (batch, seq, head_dim//2, 2)
-        batch_size, seq_len, head_dim = raw_outputs.shape
-        pairs = raw_outputs.view(batch_size, seq_len, head_dim // 2, 2)
-
-        # Normalize each pair to unit vectors
-        pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
-        normalized_pairs = pairs / (pair_norms + 1e-8)  # Add small epsilon for numerical stability
-
-        # Reshape back to original format
-        outputs_4d = normalized_pairs.view(batch_size, seq_len, head_dim)
+        # Get 4D position outputs directly
+        outputs_4d = self.lm_head(hidden_states[:, slice_indices, :])
 
         loss = None
         if labels is not None:
-            # Cosine similarity loss for RoPE-rotated representation
-            import torch.nn.functional as F
-            
-            # Ensure labels have shape (batch_size, sequence_length, head_dim)
+            # MSE loss for direct 4D position regression
+            loss_fct = nn.MSELoss()
+            # Ensure labels have shape (batch_size, sequence_length, 4)
             if labels.dim() == 2:
                 raise ValueError(
-                    "For RoPE regression, labels should have shape (batch_size, sequence_length, head_dim)")
-            
-            # Flatten for full vector cosine similarity
-            pred_flat = outputs_4d.view(-1, outputs_4d.size(-1))  # (batch*seq, head_dim)
-            target_flat = labels.view(-1, labels.size(-1))       # (batch*seq, head_dim)
-            
-            # Mask out padded positions (where labels == -100)
-            mask = (target_flat != -100).all(dim=-1)  # (batch*seq,)
-            
-            if mask.any():
-                pred_masked = pred_flat[mask]   # (valid_tokens, head_dim)
-                target_masked = target_flat[mask] # (valid_tokens, head_dim)
-                
-                # Cosine similarity between full 128D vectors
-                cos_sim = F.cosine_similarity(pred_masked, target_masked, dim=-1)
-                # Use arccos to ensure non-negative loss that can't cancel out
-                cos_sim_clamped = torch.clamp(cos_sim, -0.99999, 0.99999)
-                loss = torch.arccos(cos_sim_clamped).mean()
-
-                # Debug: log statistics
-                if torch.rand(1).item() < 0.1:  # Log 10% of the time
-                    print(f"Cosine sim stats: min={cos_sim.min():.3f}, max={cos_sim.max():.3f}, mean={cos_sim.mean():.3f}")
-                    print(f"Arccos loss: {loss.item():.3f}")
-            else:
-                loss = torch.tensor(0.0, device=outputs_4d.device)
+                    "For 4D regression, labels should have shape (batch_size, sequence_length, 4)")
+            loss = loss_fct(outputs_4d, labels)
 
         return CausalLMOutputWithPast(
             loss=loss,
-            logits=outputs_4d,  # Now contains RoPE-rotated representation outputs
+            logits=outputs_4d,  # Now contains 4D position outputs
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,

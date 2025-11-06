@@ -234,11 +234,11 @@ class MidiDataset4DStreaming(Dataset):
 
         # Create input_ids and labels
         input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
-        rope_targets = create_rope_targets(chunk)
-
-        labels = rope_targets[1:].clone()
-        last_target = rope_targets[-1:].clone()
-        labels = torch.cat([labels, last_target], dim=0)
+        
+        # Labels are next 4D positions (not RoPE targets)
+        labels = chunk[1:].clone()  # Next position prediction
+        last_position = chunk[-1:].clone()
+        labels = torch.cat([labels, last_position], dim=0)
 
         if original_len < self.max_seq_len:
             labels[original_len:] = -100
@@ -342,18 +342,15 @@ class MidiDataset4D(Dataset):
             # Create input_ids (all zeros since vocab_size = 1)
             input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
 
-            # Create RoPE-rotated targets instead of raw 4D vectors
-            rope_targets = create_rope_targets(chunk)  # (seq_len, head_dim=128)
-
-            # Create labels (next RoPE target prediction)
-            labels = rope_targets[1:].clone()  # Next rope target prediction
+            # Create labels (next 4D position prediction)
+            labels = chunk[1:].clone()  # Next position prediction
             # Pad labels to same length as chunk
-            last_target = rope_targets[-1:].clone()
-            labels = torch.cat([labels, last_target], dim=0)
+            last_position = chunk[-1:].clone()
+            labels = torch.cat([labels, last_position], dim=0)
 
             # Set padded label positions to -100 (ignore in loss)
             if original_len < self.max_seq_len:
-                labels[original_len:] = -100  # -1 because labels are shifted
+                labels[original_len:] = -100
 
             self.chunks.append({
                 'input_ids': input_ids,
