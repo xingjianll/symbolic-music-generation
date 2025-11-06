@@ -510,8 +510,20 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        # Get 4D regression outputs instead of vocabulary logits
-        outputs_4d = self.regression_head(hidden_states[:, slice_indices, :])
+        # Get RoPE-rotated representation outputs
+        raw_outputs = self.regression_head(hidden_states[:, slice_indices, :])
+        
+        # Apply pairwise normalization to ensure unit vectors (as RoPE preserves norms)
+        # Reshape to pairs: (batch, seq, head_dim) -> (batch, seq, head_dim//2, 2)
+        batch_size, seq_len, head_dim = raw_outputs.shape
+        pairs = raw_outputs.view(batch_size, seq_len, head_dim // 2, 2)
+        
+        # Normalize each pair to unit vectors
+        pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
+        normalized_pairs = pairs / (pair_norms + 1e-8)  # Add small epsilon for numerical stability
+        
+        # Reshape back to original format
+        outputs_4d = normalized_pairs.view(batch_size, seq_len, head_dim)
 
         loss = None
         if labels is not None:
