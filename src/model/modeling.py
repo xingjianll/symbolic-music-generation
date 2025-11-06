@@ -90,14 +90,6 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
-def freqs_to_cos_sin(freqs):
-    """Convert frequencies to cos and sin embeddings."""
-    emb = torch.cat((freqs, freqs), dim=-1)
-    cos = emb.cos()
-    sin = emb.sin()
-    return cos, sin
-
-
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """Applies Rotary Position Embedding to the query and key tensors.
 
@@ -458,8 +450,9 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         super().__init__(config)
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
-        # Regression head that outputs a 4D vector
-        self.regression_head = nn.Linear(config.hidden_size, 4, bias=False)
+        # Regression head that outputs RoPE-rotated representation (head_dim dimensions)
+        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+        self.regression_head = nn.Linear(config.hidden_size, head_dim, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -522,16 +515,16 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
         loss = None
         if labels is not None:
-            # MSE loss for 4D regression
+            # MSE loss for RoPE-rotated representation regression
             loss_fct = nn.MSELoss()
-            # Ensure labels have shape (batch_size, sequence_length, 4)
+            # Ensure labels have shape (batch_size, sequence_length, head_dim)
             if labels.dim() == 2:
-                raise ValueError("For 4D regression, labels should have shape (batch_size, sequence_length, 4)")
+                raise ValueError("For RoPE regression, labels should have shape (batch_size, sequence_length, head_dim)")
             loss = loss_fct(outputs_4d, labels)
 
         return CausalLMOutputWithPast(
             loss=loss,
-            logits=outputs_4d,  # Now contains 4D regression outputs
+            logits=outputs_4d,  # Now contains RoPE-rotated representation outputs
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,

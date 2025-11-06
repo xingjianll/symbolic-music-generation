@@ -48,6 +48,64 @@ def _create_position_tensors(notes, score: ScoreSecond) -> torch.Tensor:
 
     return torch.tensor(positions, dtype=torch.float32)
 
+
+def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> torch.Tensor:
+    """
+    Create RoPE-rotated targets from 4D position tensors using existing RoPE functions.
+    
+    Args:
+        position_tensors: (seq_len, 4) tensor of [start_time, duration, pitch, velocity]
+        head_dim: dimension of attention heads
+        
+    Returns:
+        torch.Tensor: (seq_len, head_dim) rotated representations
+    """
+    from src.model.modeling import apply_rotary_pos_emb
+    
+    seq_len = position_tensors.shape[0]
+    device = position_tensors.device
+    
+    # Create base vector: [1, 0, 1, 0, ...] pattern
+    base_pattern = torch.tensor([1.0, 0.0], device=device)
+    base_vector = base_pattern.repeat(head_dim // 2)  # (head_dim,)
+    
+    # Create frequency bands for 4D RoPE (same as in modeling.py)
+    theta = 10000
+    freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / head_dim))
+    
+    # Apply 4D RoPE to each position
+    targets = []
+    
+    for i in range(seq_len):
+        pos_4d = position_tensors[i]  # (4,)
+        
+        frequencies = []
+        for d in range(4):  # For each position dimension
+            pos_d = pos_4d[d:d+1]  # (1,)
+            dim_frequencies = pos_d * freq_bands  # (head_dim//8,)
+            dim_frequencies = dim_frequencies.repeat_interleave(2)  # (head_dim//4,)
+            frequencies.append(dim_frequencies)
+        
+        # Concatenate all frequencies
+        all_freqs = torch.cat(frequencies)  # (head_dim,)
+        
+        # Convert frequencies to cos/sin (same as in Qwen3Model forward)
+        cos_vals = all_freqs.cos().unsqueeze(0)  # (1, head_dim)
+        sin_vals = all_freqs.sin().unsqueeze(0)  # (1, head_dim)
+        
+        # Reshape base vector to match query/key format: (1, 1, 1, head_dim)
+        q = base_vector.unsqueeze(0).unsqueeze(0).unsqueeze(0)  # (1, 1, 1, head_dim)
+        k = q.clone()  # dummy key, we only need one output
+        
+        # Apply RoPE rotation using existing function
+        rotated_q, _ = apply_rotary_pos_emb(q, k, cos_vals, sin_vals, unsqueeze_dim=1)
+        
+        # Extract the rotated vector
+        rotated = rotated_q.squeeze()  # (head_dim,)
+        targets.append(rotated)
+    
+    return torch.stack(targets)  # (seq_len, head_dim)
+
 class MidiDataset4D(Dataset):
     """Dataset that concatenates all MIDI files and chunks for pretraining."""
     
@@ -138,11 +196,14 @@ class MidiDataset4D(Dataset):
             # Create input_ids (all zeros since vocab_size = 1)
             input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
             
-            # Create labels (next 4D vector prediction)
-            labels = chunk[1:].clone()  # Next vector prediction
+            # Create RoPE-rotated targets instead of raw 4D vectors
+            rope_targets = create_rope_targets(chunk)  # (seq_len, head_dim=128)
+            
+            # Create labels (next RoPE target prediction)
+            labels = rope_targets[1:].clone()  # Next rope target prediction
             # Pad labels to same length as chunk
-            last_vector = chunk[-1:].clone()
-            labels = torch.cat([labels, last_vector], dim=0)
+            last_target = rope_targets[-1:].clone()
+            labels = torch.cat([labels, last_target], dim=0)
             
             # Set padded label positions to -100 (ignore in loss)
             if original_len < self.max_seq_len:
