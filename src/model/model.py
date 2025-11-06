@@ -273,7 +273,7 @@ class MidiAria(pl.LightningModule):
 class MidiQwenNew(pl.LightningModule):
     def __init__(self, tokenizer, dataloader, lr=5e-5, warmup_steps=1000):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['tokenizer'])
 
         config = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B", trust_remote_code=True)
         config.hidden_size = 512  # 1024
