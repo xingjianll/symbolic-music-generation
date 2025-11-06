@@ -17,7 +17,7 @@ from src.utils import CONTEXT_SIZE, merge_score_tracks, handle_tempos, handle_ke
 from src.model.model import MidiQwenNew
 
 EPOCHS = 24
-BATCH_SIZE = 8  # Adjust based on GPU memory
+BATCH_SIZE = 32
 MAX_SEQ_LEN = CONTEXT_SIZE
 
 
@@ -244,10 +244,10 @@ def main():
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4D(train_files[:1000], max_seq_len=MAX_SEQ_LEN)  # Start with subset
+    train_dataset = MidiDataset4D(train_files, max_seq_len=MAX_SEQ_LEN)  # Start with subset
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4D(train_files[:100], max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4D(val_files, max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
