@@ -219,19 +219,22 @@ class MidiDataset4D(Dataset):
         num_chunks = chunks.shape[0]
         all_rope_targets = []
         
-        print(f"Processing {num_chunks} chunks one by one on GPU...")
-        for i in range(num_chunks):
-            print(i)
-            # Process single chunk to avoid OOM
-            chunk = chunks[i:i+1]  # (1, seq_len, 4)
-            flattened = chunk.view(-1, 4)  # (seq_len, 4)
+        print(f"Processing {num_chunks} chunks in batches of 10 on GPU...")
+        batch_size = 10
+        for i in range(0, num_chunks, batch_size):
+            print(i*batch_size)
+            end_idx = min(i + batch_size, num_chunks)
+
+            # Process batch of chunks
+            chunk_batch = chunks[i:end_idx]  # (batch_size, seq_len, 4)
+            flattened = chunk_batch.view(-1, 4)  # (batch_size * seq_len, 4)
             
-            # Clear cache before each chunk
+            # Clear cache before each batch
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
             
-            rope_batch = create_rope_targets(flattened)  # (seq_len, head_dim)
-            rope_chunked = rope_batch.unsqueeze(0)  # (1, seq_len, head_dim)
+            rope_batch = create_rope_targets(flattened)  # (batch_size * seq_len, head_dim)
+            rope_chunked = rope_batch.view(end_idx - i, self.max_seq_len, -1)  # (batch_size, seq_len, head_dim)
             
             # Move to CPU immediately to free GPU memory
             all_rope_targets.append(rope_chunked.cpu())
