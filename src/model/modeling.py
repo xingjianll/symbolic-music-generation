@@ -340,7 +340,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        position_tensors: list[torch.Tensor] = None,
+        position_tensors: torch.Tensor = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -405,55 +405,54 @@ class Qwen3Model(Qwen3PreTrainedModel):
             past_key_values=past_key_values if use_cache else None,
         )
 
-    def rot_pos_emb(self, position_tensors: list[torch.Tensor]) -> torch.Tensor:
+    def rot_pos_emb(self, position_tensors: torch.Tensor) -> torch.Tensor:
         """
         Generate rotary position embeddings for continuous 4D positions.
         
         Args:
-            position_tensors: List of tensors, each with shape (num_tokens, 4) containing 
-                             continuous 4D positions for each token
+            position_tensors: Tensor with shape (batch_size, seq_len, 4) containing 
+                             continuous 4D positions for each batch item
         
         Returns:
-            torch.Tensor: Raw frequencies with shape (seq_len, head_dim) where adjacent pairs 
-                         have the same frequency value (matching RoPE from paper)
+            torch.Tensor: Raw frequencies with shape (batch_size, seq_len, head_dim)
         """
         head_dim = getattr(self.config, "head_dim", self.config.hidden_size // self.config.num_attention_heads)
         theta = 10000
 
-        device = position_tensors[0].device
+        device = position_tensors.device
+        batch_size, seq_len = position_tensors.shape[:2]
         
         # Debug prints
         print(f"DEBUG rot_pos_emb: head_dim={head_dim}")
-        print(f"DEBUG rot_pos_emb: config.hidden_size={self.config.hidden_size}")
-        print(f"DEBUG rot_pos_emb: config.num_attention_heads={self.config.num_attention_heads}")
+        print(f"DEBUG rot_pos_emb: batch_size={batch_size}, seq_len={seq_len}")
         
-        # Concatenate all position tensors
-        all_positions = torch.cat(position_tensors, dim=0)  # (seq_len, 4)
+        # Position tensors already have shape (batch_size, seq_len, 4)
+        all_positions = position_tensors
         print(f"DEBUG rot_pos_emb: all_positions.shape={all_positions.shape}")
         
-        # Create frequency bands - for 4D positions, we use dim/8 unique frequencies
+        # Create frequency bands - for 4D positions, we use head_dim/8 unique frequencies
         # Each frequency will be used for a pair of dimensions (2D rotation)
-        # Applied to all 4 position dimensions gives us dim/8 * 2 * 4 = dim
+        # Applied to all 4 position dimensions gives us head_dim/8 * 2 * 4 = head_dim
         freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / head_dim))
         print(f"DEBUG rot_pos_emb: freq_bands.shape={freq_bands.shape}")
         
         frequencies = []
         
         for d in range(4):  # For each of the 4 position dimensions
-            # Get positions for this dimension
-            pos_d = all_positions[:, d:d+1]  # (seq_len, 1)
+            # Get positions for this dimension: (batch_size, seq_len, 1)
+            pos_d = all_positions[:, :, d:d+1]
             
             # Apply frequency bands to this position dimension
-            dim_frequencies = pos_d * freq_bands  # (seq_len, unique_freqs)
+            dim_frequencies = pos_d * freq_bands  # (batch_size, seq_len, num_freqs)
             
             # Duplicate each frequency to create pairs (matching RoPE paper)
             # Each frequency is used for both elements of a 2D rotation
-            dim_frequencies = dim_frequencies.repeat_interleave(2, dim=-1)  # (seq_len, freq_per_dim)
+            dim_frequencies = dim_frequencies.repeat_interleave(2, dim=-1)  # (batch_size, seq_len, head_dim//4)
             
             frequencies.append(dim_frequencies)
         
         # Concatenate frequencies from all 4 dimensions
-        frequencies = torch.cat(frequencies, dim=-1)  # (seq_len, head_dim)
+        frequencies = torch.cat(frequencies, dim=-1)  # (batch_size, seq_len, head_dim)
         
         print(f"DEBUG rot_pos_emb: final frequencies.shape={frequencies.shape}")
         return frequencies
@@ -488,7 +487,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
-        position_tensors: list[torch.Tensor] = None,
+        position_tensors: torch.Tensor = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         r"""
