@@ -84,10 +84,18 @@ class Qwen3MLP(nn.Module):
 
 
 def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2:]
-    return torch.cat((-x2, x1), dim=-1)
+    """Rotate adjacent (interleaved) pairs: (x0,x1)->(-x1,x0)."""
+    # Split into (even, odd) positions
+    x_even = x[..., 0::2]   # x0, x2, x4, ...
+    x_odd  = x[..., 1::2]   # x1, x3, x5, ...
+
+    # Apply rotation: (x, y) -> (-y, x)
+    y_even = -x_odd
+    y_odd  = x_even
+
+    # Re-interleave them
+    return torch.stack([y_even, y_odd], dim=-1).reshape_as(x)
+
 
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
@@ -115,6 +123,20 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
+
+def apply_rotary_pos_emb_1(v, cos, sin, unsqueeze_dim=1):
+    print("apply_rotary_pos_emb_1")
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    v_embed = (v * cos) + (rotate_half(v) * sin)
+    return v_embed
+
+def apply_rotary_pos_emb_T(v, cos, sin, unsqueeze_dim=1):
+    print("apply_rotary_pos_emb_T")
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    v_embed = (v * cos) - (rotate_half(v) * sin)
+    return v_embed
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -203,6 +225,7 @@ class Qwen3Attention(nn.Module):
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        value_states = apply_rotary_pos_emb_1(value_states, cos, sin)
 
         if past_key_values is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
@@ -224,7 +247,8 @@ class Qwen3Attention(nn.Module):
             sliding_window=self.sliding_window,  # diff with Llama
             **kwargs,
         )
-
+        attn_output = attn_output.transpose(1, 2)
+        attn_output = apply_rotary_pos_emb_T(attn_output, cos, sin)
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
@@ -560,13 +584,43 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
         loss = None
         if labels is not None:
-            # Standard MSE loss for 4D position regression  
-            loss_fct = nn.MSELoss()
-            # Ensure labels have shape (batch_size, sequence_length, 4)
+            # Compute sinusoidal encoding of predicted 4D positions
+            pred_sinusoidal = self._compute_sinusoidal_encoding(outputs_4d)
+
+            # Labels should be precomputed sinusoidal encodings
+
             if labels.dim() == 2:
                 raise ValueError(
-                    "For 4D regression, labels should have shape (batch_size, sequence_length, 4)")
-            loss = loss_fct(outputs_4d, labels)
+                    "Labels should have shape (batch_size, sequence_length, head_dim) with sinusoidal encodings")
+
+            # Flatten for pairwise cosine similarity
+            pred_flat = pred_sinusoidal.view(-1, pred_sinusoidal.size(-1))  # (batch*seq, head_dim)
+            target_flat = labels.view(-1, labels.size(-1))  # (batch*seq, head_dim)
+
+            # Mask out padded positions (where labels == -100)
+            mask = (target_flat != -100).all(dim=-1)  # (batch*seq,)
+
+            if mask.any():
+                pred_masked = pred_flat[mask]  # (valid_tokens, head_dim)
+                target_masked = target_flat[mask]  # (valid_tokens, head_dim)
+
+                # Reshape to pairs and compute pairwise cosine similarity
+                head_dim = pred_masked.size(-1)
+                pred_pairs = pred_masked.view(-1, 2)  # (valid_tokens * head_dim//2, 2)
+                target_pairs = target_masked.view(-1, 2)  # (valid_tokens * head_dim//2, 2)
+
+                # Cosine similarity between corresponding 2D pairs
+                cos_sim = F.cosine_similarity(pred_pairs, target_pairs, dim=-1)
+                # Use 1 - cosine similarity as loss
+                loss = (1 - cos_sim).mean()
+
+                # Debug: log statistics
+                if torch.rand(1).item() < 0.1:
+                    print(
+                        f"Pairwise cosine sim: 1-min={1 - cos_sim.min():.3f}, 1-max={1 - cos_sim.max():.3f}, 1-mean={1 - cos_sim.mean():.3f}")
+                    print(f"1-cosine loss: {loss.item():.3f}")
+            else:
+                loss = torch.tensor(0.0, device=outputs_4d.device)
 
         return CausalLMOutputWithPast(
             loss=loss,

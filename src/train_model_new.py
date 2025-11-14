@@ -96,6 +96,7 @@ def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> 
 
     return rotated
 
+
 class MidiDataset4DStreaming(Dataset):
     """Streaming dataset that loads first 100 files, then fetches 2 files per batch."""
 
@@ -234,7 +235,7 @@ class MidiDataset4DStreaming(Dataset):
 
         # Create input_ids and labels
         input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
-        
+
         # Labels are next 4D positions directly
         labels = chunk[1:].clone()  # Next position prediction
         last_position = chunk[-1:].clone()
@@ -249,6 +250,7 @@ class MidiDataset4DStreaming(Dataset):
             'labels': labels,
             'attention_mask': attention_mask
         }
+
 
 class MidiDataset4D(Dataset):
     """Dataset that concatenates all MIDI files and chunks for pretraining."""
@@ -395,10 +397,10 @@ def main():
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4DStreaming(train_files, max_seq_len=MAX_SEQ_LEN)  # Start with subset
+    train_dataset = MidiDataset4DStreaming(train_files[:50], max_seq_len=MAX_SEQ_LEN)  # Start with subset
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4D(val_files, max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4D(train_files[:50], max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -440,6 +442,7 @@ def main():
 
         def __getitem__(self, key):
             return 0
+
     print("here10")
     dummy_tokenizer = DummyTokenizer()
     print("here20")
