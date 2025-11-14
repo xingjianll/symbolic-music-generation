@@ -125,14 +125,12 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     return q_embed, k_embed
 
 def apply_rotary_pos_emb_1(v, cos, sin, unsqueeze_dim=1):
-    print("apply_rotary_pos_emb_1")
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
     v_embed = (v * cos) + (rotate_half(v) * sin)
     return v_embed
 
 def apply_rotary_pos_emb_T(v, cos, sin, unsqueeze_dim=1):
-    print("apply_rotary_pos_emb_T")
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
     v_embed = (v * cos) - (rotate_half(v) * sin)
@@ -476,7 +474,8 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         # LM head that outputs 4D positions directly
-        self.lm_head = nn.Linear(config.hidden_size, 4, bias=False)
+        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+        self.lm_head = nn.Linear(config.hidden_size, head_dim, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -579,46 +578,58 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        # Get 4D position outputs directly
-        outputs_4d = self.lm_head(hidden_states[:, slice_indices, :])
+        # Get RoPE-rotated representation outputs
+        raw_outputs = self.lm_head(hidden_states[:, slice_indices, :])
+
+        # Apply pairwise normalization to ensure unit vectors (as RoPE preserves norms)
+        # Reshape to pairs: (batch, seq, head_dim) -> (batch, seq, head_dim//2, 2)
+        batch_size, seq_len, head_dim = raw_outputs.shape
+        pairs = raw_outputs.view(batch_size, seq_len, head_dim // 2, 2)
+
+        # Normalize each pair to unit vectors
+        pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
+        normalized_pairs = pairs / (pair_norms + 1e-8)  # Add small epsilon for numerical stability
+
+        # Reshape back to original format
+        outputs_4d = normalized_pairs.view(batch_size, seq_len, head_dim)
 
         loss = None
         if labels is not None:
-            # Compute sinusoidal encoding of predicted 4D positions
-            pred_sinusoidal = self._compute_sinusoidal_encoding(outputs_4d)
+            # Cosine similarity loss for RoPE-rotated representation
+            import torch.nn.functional as F
 
-            # Labels should be precomputed sinusoidal encodings
-
+            # Ensure labels have shape (batch_size, sequence_length, head_dim)
             if labels.dim() == 2:
                 raise ValueError(
-                    "Labels should have shape (batch_size, sequence_length, head_dim) with sinusoidal encodings")
+                    "For RoPE regression, labels should have shape (batch_size, sequence_length, head_dim)")
 
-            # Flatten for pairwise cosine similarity
-            pred_flat = pred_sinusoidal.view(-1, pred_sinusoidal.size(-1))  # (batch*seq, head_dim)
-            target_flat = labels.view(-1, labels.size(-1))  # (batch*seq, head_dim)
+            # Reshape to pairs for pairwise cosine similarity
+            pred_pairs = outputs_4d.view(batch_size, seq_len, head_dim // 2, 2)  # (batch, seq, 64, 2)
+            target_pairs = labels.view(batch_size, seq_len, head_dim // 2, 2)    # (batch, seq, 64, 2)
+
+            # Flatten pairs for computation
+            pred_pairs_flat = pred_pairs.view(-1, 2)    # (batch*seq*64, 2)
+            target_pairs_flat = target_pairs.view(-1, 2) # (batch*seq*64, 2)
 
             # Mask out padded positions (where labels == -100)
-            mask = (target_flat != -100).all(dim=-1)  # (batch*seq,)
+            mask = (target_pairs_flat != -100).all(dim=-1)  # (batch*seq*64,)
 
             if mask.any():
-                pred_masked = pred_flat[mask]  # (valid_tokens, head_dim)
-                target_masked = target_flat[mask]  # (valid_tokens, head_dim)
-
-                # Reshape to pairs and compute pairwise cosine similarity
-                head_dim = pred_masked.size(-1)
-                pred_pairs = pred_masked.view(-1, 2)  # (valid_tokens * head_dim//2, 2)
-                target_pairs = target_masked.view(-1, 2)  # (valid_tokens * head_dim//2, 2)
+                pred_masked = pred_pairs_flat[mask]   # (valid_pairs, 2)
+                target_masked = target_pairs_flat[mask] # (valid_pairs, 2)
 
                 # Cosine similarity between corresponding 2D pairs
-                cos_sim = F.cosine_similarity(pred_pairs, target_pairs, dim=-1)
-                # Use 1 - cosine similarity as loss
-                loss = (1 - cos_sim).mean()
+                cos_sim = F.cosine_similarity(pred_masked, target_masked, dim=-1)
+                # Use arccos to ensure non-negative loss that can't cancel out
+                # arccos(cos_sim) gives angle between vectors in [0, π]
+                # More aggressive clamping to prevent NaN from floating point errors
+                cos_sim_clamped = torch.clamp(cos_sim, -0.99999, 0.99999)
+                loss = torch.arccos(cos_sim_clamped).mean()
 
                 # Debug: log statistics
-                if torch.rand(1).item() < 0.1:
-                    print(
-                        f"Pairwise cosine sim: 1-min={1 - cos_sim.min():.3f}, 1-max={1 - cos_sim.max():.3f}, 1-mean={1 - cos_sim.mean():.3f}")
-                    print(f"1-cosine loss: {loss.item():.3f}")
+                if torch.rand(1).item() < 0.1:  # Log 1% of the time
+                    print(f"Cosine sim stats: min={cos_sim.min():.3f}, max={cos_sim.max():.3f}, mean={cos_sim.mean():.3f}")
+                    print(f"Arccos loss: {loss.item():.3f}")
             else:
                 loss = torch.tensor(0.0, device=outputs_4d.device)
 

@@ -16,7 +16,7 @@ from sklearn.model_selection import train_test_split
 from src.utils import CONTEXT_SIZE, merge_score_tracks, handle_tempos, handle_key_sigs, handle_time_sigs
 from src.model.model import MidiQwenNew
 
-EPOCHS = 24
+EPOCHS = 200
 BATCH_SIZE = 32
 MAX_SEQ_LEN = CONTEXT_SIZE
 
@@ -235,10 +235,12 @@ class MidiDataset4DStreaming(Dataset):
 
         # Create input_ids and labels
         input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
+        rope_targets = create_rope_targets(chunk)
 
-        # Labels are next 4D positions directly
-        labels = chunk[1:].clone()  # Next position prediction
-        last_position = chunk[-1:].clone()
+
+    # Labels are next 4D positions directly
+        labels = rope_targets[1:].clone()  # Next position prediction
+        last_position = rope_targets[-1:].clone()
         labels = torch.cat([labels, last_position], dim=0)
 
         if original_len < self.max_seq_len:
@@ -343,10 +345,11 @@ class MidiDataset4D(Dataset):
 
             # Create input_ids (all zeros since vocab_size = 1)
             input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
+            rope_targets = create_rope_targets(chunk)
 
             # Create labels (next 4D positions directly)
-            labels = chunk[1:].clone()  # Next position prediction
-            last_position = chunk[-1:].clone()
+            labels = rope_targets[1:].clone()  # Next position prediction
+            last_position = rope_targets[-1:].clone()
             labels = torch.cat([labels, last_position], dim=0)
 
             # Set padded label positions to -100 (ignore in loss)
