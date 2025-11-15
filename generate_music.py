@@ -108,7 +108,7 @@ def positions_to_midi(notes, output_path="generated.mid", ticks_per_beat=480):
     midi.save(output_path)
     print(f"Saved MIDI to {output_path}")
 
-
+from src.model.modeling import _compute_encoding
 @torch.no_grad()
 def generate_music(model, batch, total_length: int = 200, device='cuda'):
     """
@@ -122,6 +122,7 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
     # generated = torch.zeros(1, 1, 4, device=device)
     position_tensors = batch['position_tensors']
     labels = batch['labels']
+    labels = labels.to(device)
     original = position_tensors.clone()
     position_tensors = position_tensors[:,:2,:].to(device)
     print(position_tensors)
@@ -141,6 +142,13 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
 
         # model returns logits: (1, seq, 4, 2)
         pairs = out.logits[:, -1, :, :]
+        t = _compute_encoding(labels)
+        print("--------")
+        print(labels[0, 1, :])
+        print(t[0, 1, :, :])
+        print(out.logits[0, -1, :, :])
+        print((out.logits[0, -1, :, :] * t[0, 1, :, :]).sum(dim=-1))
+        print("--------")
 
         # angle of each pair (1,6)
         angles = torch.atan2(pairs[..., 1], pairs[..., 0])
