@@ -474,56 +474,41 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         # LM head that outputs 4D positions directly
-        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        self.lm_head = nn.Linear(config.hidden_size, head_dim, bias=False)
+        head_dim = getattr(config, "head_dim", 8)
+        self.lm_head = nn.Linear(config.hidden_size, 8, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
 
-    def _compute_sinusoidal_encoding(self, position_tensors: torch.Tensor) -> torch.Tensor:
+    def _compute_encoding(self, position_tensors: torch.Tensor) -> torch.Tensor:
         """
-        Compute sinusoidal encoding of 4D positions (same as create_rope_targets).
-
-        Args:
-            position_tensors: (batch_size, seq_len, 4) tensor of [start_time, duration, pitch, velocity]
-
-        Returns:
-            torch.Tensor: (batch_size, seq_len, head_dim) sinusoidal encodings
+        Convert 4-D position indices into rotational encodings:
+        output shape: (B, S, 4, 2)
         """
         batch_size, seq_len, _ = position_tensors.shape
-        head_dim = getattr(self.config, "head_dim", self.config.hidden_size // self.config.num_attention_heads)
-        device = position_tensors.device
-        theta = 10000
 
-        # Create frequency bands (same calculation as rot_pos_emb)
-        freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / head_dim))
+        angles = []
 
-        frequencies = []
-        for d in range(4):  # For each of the 4 position dimensions
-            # Get positions for this dimension: (batch_size, seq_len, 1)
-            pos_d = position_tensors[:, :, d:d + 1]
+        for d in range(4):
+            pos_d = position_tensors[:, :, d:d + 1]  # (B, S, 1)
 
-            # Apply frequency bands to this position dimension
-            dim_frequencies = pos_d * freq_bands  # (batch_size, seq_len, head_dim//8)
+            if d <= 1:
+                angle = torch.pi * (pos_d / 64)
+            else:
+                angle = torch.pi * (pos_d / 128)
 
-            # Duplicate each frequency to create pairs (matching RoPE paper)
-            dim_frequencies = dim_frequencies.repeat_interleave(2, dim=-1)  # (batch_size, seq_len, head_dim//4)
+            angles.append(angle)  # list of (B, S, 1)
 
-            frequencies.append(dim_frequencies)
+        # (B, S, 4)
+        all_freqs = torch.cat(angles, dim=-1)
 
-        # Concatenate frequencies from all 4 dimensions
-        all_freqs = torch.cat(frequencies, dim=-1)  # (batch_size, seq_len, head_dim)
+        # Compute cos and sin
+        cos_vals = all_freqs.cos()  # (B, S, 4)
+        sin_vals = all_freqs.sin()  # (B, S, 4)
 
-        # For base vector [1, 0, 1, 0, ...], RoPE gives [cos, sin, cos, sin, ...]
-        cos_vals = all_freqs.cos()  # (batch_size, seq_len, head_dim)
-        sin_vals = all_freqs.sin()  # (batch_size, seq_len, head_dim)
-
-        # Create the rotated representation: [cos(f1), sin(f1), cos(f2), sin(f2), ...]
-        rotated = torch.zeros_like(all_freqs)
-        rotated[:, :, 0::2] = cos_vals[:, :, 0::2]  # Even indices get cos
-        rotated[:, :, 1::2] = sin_vals[:, :, 1::2]  # Odd indices get sin
-
-        return rotated
+        # Stack last dimension → (B, S, 4, 2)
+        encoding = torch.stack((cos_vals, sin_vals), dim=-1)
+        return encoding
 
     @can_return_tuple
     @auto_docstring
@@ -578,62 +563,40 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        # Get RoPE-rotated representation outputs
-        raw_outputs = self.lm_head(hidden_states[:, slice_indices, :])
+        outputs_8d = self.lm_head(hidden_states[:, slice_indices, :])
 
         # Apply pairwise normalization to ensure unit vectors (as RoPE preserves norms)
-        # Reshape to pairs: (batch, seq, head_dim) -> (batch, seq, head_dim//2, 2)
-        batch_size, seq_len, head_dim = raw_outputs.shape
-        pairs = raw_outputs.view(batch_size, seq_len, head_dim // 2, 2)
+        # Reshape to pairs: (batch, seq, 8) -> (batch, seq, 4, 2)
+        batch_size, seq_len, _ = outputs_8d.shape
+        pairs = outputs_8d.view(batch_size, seq_len, 4, 2)
 
         # Normalize each pair to unit vectors
         pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
-        normalized_pairs = pairs / (pair_norms + 1e-8)  # Add small epsilon for numerical stability
-
-        # Reshape back to original format
-        outputs_4d = normalized_pairs.view(batch_size, seq_len, head_dim)
+        pred = pairs / (pair_norms + 1e-8)  # Add small epsilon for numerical stability
 
         loss = None
         if labels is not None:
-            # Cosine similarity loss for RoPE-rotated representation
-            import torch.nn.functional as F
-
-            # Ensure labels have shape (batch_size, sequence_length, head_dim)
-            if labels.dim() == 2:
-                raise ValueError(
-                    "For RoPE regression, labels should have shape (batch_size, sequence_length, head_dim)")
-
-            # Reshape to pairs for pairwise cosine similarity
-            pred_pairs = outputs_4d.view(batch_size, seq_len, head_dim // 2, 2)  # (batch, seq, 64, 2)
-            target_pairs = labels.view(batch_size, seq_len, head_dim // 2, 2)    # (batch, seq, 64, 2)
-
-            # Flatten pairs for computation
-            pred_pairs_flat = pred_pairs.view(-1, 2)    # (batch*seq*64, 2)
-            target_pairs_flat = target_pairs.view(-1, 2) # (batch*seq*64, 2)
+            # Compute rotational encoding of target values
+            target = self._compute_encoding(labels) # (batch, seq, 4, 2)
 
             # Mask out padded positions (where labels == -100)
-            mask = (target_pairs_flat != -100).all(dim=-1)  # (batch*seq*64,)
-
+            mask = (labels != -100).all(dim=-1)  # (batch*seq,)
             if mask.any():
-                pred_masked = pred_pairs_flat[mask]   # (valid_pairs, 2)
-                target_masked = target_pairs_flat[mask] # (valid_pairs, 2)
+                pred = pred[mask]  # (N, 4, 2)
+                target = target[mask]  # (N, 4, 2)
 
-                # Cosine similarity between corresponding 2D pairs
-                cos_sim = F.cosine_similarity(pred_masked, target_masked, dim=-1)
-                # More aggressive clamping to prevent NaN from floating point errors
-                cos_sim = torch.clamp(cos_sim, -0.99999, 0.99999)
-                loss = (1.0 - cos_sim).mean()
+                # angular similarity between corresponding 2D pairs
+                cos_sim = (pred * target).sum(dim=-1)
+                loss = (1 - cos_sim).mean()
 
-                # Debug: log statistics
-                if torch.rand(1).item() < 0.1:  # Log 1% of the time
-                    print(f"Cosine sim stats: min={cos_sim.min():.3f}, max={cos_sim.max():.3f}, mean={cos_sim.mean():.3f}")
-                    print(f"Arccos loss: {loss.item():.3f}")
+                if torch.rand(1).item() < 0.1:
+                    print(f"loss: {loss.item():.3f}")
             else:
-                loss = torch.tensor(0.0, device=outputs_4d.device)
+                loss = torch.tensor(0.0, device=outputs_8d.device)
 
         return CausalLMOutputWithPast(
             loss=loss,
-            logits=outputs_4d,  # Now contains 4D position outputs
+            logits=outputs_8d,  # Now contains 4D position outputs
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,

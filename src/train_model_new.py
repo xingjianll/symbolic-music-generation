@@ -16,7 +16,7 @@ from sklearn.model_selection import train_test_split
 from src.utils import CONTEXT_SIZE, merge_score_tracks, handle_tempos, handle_key_sigs, handle_time_sigs
 from src.model.model import MidiQwenNew
 
-EPOCHS = 600
+EPOCHS = 1000
 BATCH_SIZE = 32
 MAX_SEQ_LEN = CONTEXT_SIZE
 
@@ -97,162 +97,6 @@ def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> 
     return rotated
 
 
-class MidiDataset4DStreaming(Dataset):
-    """Streaming dataset that loads first 100 files, then fetches 2 files per batch."""
-
-    def __init__(self, files: List[Path], max_seq_len: int = CONTEXT_SIZE):
-        self.files = files
-        self.max_seq_len = max_seq_len
-        self.file_idx = 0
-        self.current_sequence = torch.tensor([], dtype=torch.float32).reshape(0, 4)
-        self.total_chunks_served = 0
-
-        # Load first 100 files
-        print("Loading first 100 files into memory...")
-        initial_files = files[:100]
-        self.current_sequence = self._load_and_concatenate_files(initial_files)
-        self.file_idx = 100
-
-        # Calculate total estimated chunks for __len__
-        self.estimated_total_chunks = self._estimate_total_chunks()
-
-        print(f"Loaded {len(initial_files)} files, estimated {self.estimated_total_chunks} total chunks")
-
-    def _estimate_total_chunks(self) -> int:
-        """Estimate total chunks across all files."""
-        # Sample first 50 files to estimate average chunk count
-        sample_files = self.files[:50]
-        total_notes = 0
-        valid_files = 0
-
-        for file_path in sample_files:
-            try:
-                score = symusic.Score.from_file(str(file_path))
-                merge_score_tracks(score)
-                if score.tracks and len(score.tracks[0].notes) > 5:
-                    total_notes += len(score.tracks[0].notes)
-                    valid_files += 1
-            except:
-                continue
-
-        if valid_files == 0:
-            return 1000  # Fallback estimate
-
-        avg_notes_per_file = total_notes / valid_files
-        avg_chunks_per_file = (avg_notes_per_file + 2) / self.max_seq_len  # +2 for BOS/EOS
-        total_estimated = int(len(self.files) * avg_chunks_per_file)
-        return max(total_estimated, 1)
-
-    def _load_and_concatenate_files(self, file_list: List[Path]) -> torch.Tensor:
-        """Load and concatenate files from the given list."""
-        all_tensors = []
-
-        for file_path in file_list:
-            try:
-                score = symusic.Score.from_file(str(file_path))
-                merge_score_tracks(score)
-                score = score.to("second")
-
-                if not score.tracks or len(score.tracks[0].notes) == 0:
-                    continue
-
-                track = score.tracks[0]
-                all_notes = list(track.notes)
-
-                if len(all_notes) < 5:
-                    continue
-
-                all_notes.sort(key=lambda x: x.start)
-                position_tensors = _create_position_tensors(all_notes, score)
-                all_tensors.append(position_tensors)
-
-            except Exception as e:
-                print(f"Failed to process {file_path}: {e}")
-                continue
-
-        if all_tensors:
-            return torch.cat(all_tensors, dim=0)
-        else:
-            return torch.tensor([], dtype=torch.float32).reshape(0, 4)
-
-    def _fetch_next_files(self) -> torch.Tensor:
-        """Fetch next 2 files and add to current sequence."""
-        if self.file_idx >= len(self.files):
-            return torch.tensor([], dtype=torch.float32).reshape(0, 4)
-
-        end_idx = min(self.file_idx + 2, len(self.files))
-        next_files = self.files[self.file_idx:end_idx]
-        self.file_idx = end_idx
-
-        return self._load_and_concatenate_files(next_files)
-
-    def __len__(self):
-        return self.estimated_total_chunks
-
-    def __getitem__(self, idx):
-        # Check if we need more data
-        while self.current_sequence.shape[0] < self.max_seq_len:
-            new_data = self._fetch_next_files()
-            if new_data.shape[0] == 0:
-                break  # No more files
-            self.current_sequence = torch.cat([self.current_sequence, new_data], dim=0)
-
-        # Extract chunk
-        if self.current_sequence.shape[0] == 0:
-            # No data available, return dummy chunk
-            chunk = torch.zeros(self.max_seq_len, 4)
-            original_len = 0
-        else:
-            chunk_end = min(self.max_seq_len, self.current_sequence.shape[0])
-            chunk = self.current_sequence[:chunk_end]
-            original_len = chunk.shape[0]
-
-            # Remove served chunk from sequence
-            self.current_sequence = self.current_sequence[chunk_end:]
-            self.total_chunks_served += 1
-
-        # Create attention mask
-        attention_mask = torch.ones(self.max_seq_len, dtype=torch.long)
-
-        # Only pad if this is truly the last chunk of the epoch
-        is_last_chunk = (self.file_idx >= len(self.files) and
-                         self.current_sequence.shape[0] < self.max_seq_len)
-
-        if chunk.shape[0] < self.max_seq_len:
-            if is_last_chunk:
-                # Pad only at very end of epoch
-                pad_len = self.max_seq_len - chunk.shape[0]
-                last_time = chunk[-1, 0].item() if chunk.shape[0] > 0 else 0.0
-                pad_tensor = torch.tensor([last_time, 0.0, 2, 0]).repeat(pad_len, 1)
-                chunk = torch.cat([chunk, pad_tensor], dim=0)
-                attention_mask[original_len:] = 0
-            else:
-                # Don't pad, just return shorter chunk and adjust mask
-                temp_chunk = torch.zeros(self.max_seq_len, 4)
-                temp_chunk[:chunk.shape[0]] = chunk
-                chunk = temp_chunk
-                attention_mask[original_len:] = 0
-
-        # Create input_ids and labels
-        input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
-        rope_targets = create_rope_targets(chunk)
-
-
-    # Labels are next 4D positions directly
-        labels = rope_targets[1:].clone()  # Next position prediction
-        last_position = rope_targets[-1:].clone()
-        labels = torch.cat([labels, last_position], dim=0)
-
-        if original_len < self.max_seq_len:
-            labels[original_len:] = -100
-
-        return {
-            'input_ids': input_ids,
-            'position_tensors': chunk,
-            'labels': labels,
-            'attention_mask': attention_mask
-        }
-
 
 class MidiDataset4D(Dataset):
     """Dataset that concatenates all MIDI files and chunks for pretraining."""
@@ -264,7 +108,7 @@ class MidiDataset4D(Dataset):
 
         # Load all files and create one big concatenated sequence
         print("Loading and concatenating all MIDI files...")
-        all_position_tensors = self._load_and_concatenate_files()
+        all_position_tensors = self._load_and_concatenate_files(self.files)
 
         # Chunk the concatenated sequence
         print(f"Chunking into sequences of length {max_seq_len}...")
@@ -272,11 +116,11 @@ class MidiDataset4D(Dataset):
 
         print(f"Created {len(self.chunks)} chunks for training")
 
-    def _load_and_concatenate_files(self):
+    def _load_and_concatenate_files(self, file_list: List[Path]):
         """Load all MIDI files and concatenate into one big sequence."""
         all_tensors = []
 
-        for file_path in self.files:
+        for file_path in file_list:
             try:
                 # Load MIDI file using symusic
                 score = symusic.Score.from_file(str(file_path))
@@ -345,12 +189,14 @@ class MidiDataset4D(Dataset):
 
             # Create input_ids (all zeros since vocab_size = 1)
             input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
-            rope_targets = create_rope_targets(chunk)
 
-            # Create labels (next 4D positions directly)
-            labels = rope_targets[1:].clone()  # Next position prediction
-            last_position = rope_targets[-1:].clone()
+            # Create labels (next 4D positions with delta time as first feature)
+            labels = chunk[1:].clone()  # Next position prediction
+            last_position = chunk[-1:].clone()
             labels = torch.cat([labels, last_position], dim=0)
+
+            # Convert first feature from absolute time to delta time
+            labels[0:, 0] = labels[0:, 0] - chunk[0:, 0]  # Subsequent labels: delta from previous position
 
             # Set padded label positions to -100 (ignore in loss)
             if original_len < self.max_seq_len:
@@ -369,6 +215,130 @@ class MidiDataset4D(Dataset):
     def __getitem__(self, idx):
         return self.chunks[idx]
 
+
+
+class MidiDataset4DStreaming(MidiDataset4D):
+    """Streaming dataset that loads first 100 files, then fetches 2 files per batch."""
+
+    def __init__(self, files: List[Path], max_seq_len: int = CONTEXT_SIZE):
+        self.files = files
+        self.max_seq_len = max_seq_len
+        self.file_idx = 0
+        self.current_sequence = torch.tensor([], dtype=torch.float32).reshape(0, 4)
+        self.total_chunks_served = 0
+
+        # Load first 100 files
+        print("Loading first 100 files into memory...")
+        initial_files = files[:100]
+        self.current_sequence = self._load_and_concatenate_files(initial_files)
+        self.file_idx = 100
+
+        # Calculate total estimated chunks for __len__
+        self.estimated_total_chunks = self._estimate_total_chunks()
+
+        print(f"Loaded {len(initial_files)} files, estimated {self.estimated_total_chunks} total chunks")
+
+    def _estimate_total_chunks(self) -> int:
+        """Estimate total chunks across all files."""
+        # Sample first 50 files to estimate average chunk count
+        sample_files = self.files[:50]
+        total_notes = 0
+        valid_files = 0
+
+        for file_path in sample_files:
+            try:
+                score = symusic.Score.from_file(str(file_path))
+                merge_score_tracks(score)
+                if score.tracks and len(score.tracks[0].notes) > 5:
+                    total_notes += len(score.tracks[0].notes)
+                    valid_files += 1
+            except:
+                continue
+
+        if valid_files == 0:
+            return 1000  # Fallback estimate
+
+        avg_notes_per_file = total_notes / valid_files
+        avg_chunks_per_file = (avg_notes_per_file + 2) / self.max_seq_len  # +2 for BOS/EOS
+        total_estimated = int(len(self.files) * avg_chunks_per_file)
+        return max(total_estimated, 1)
+
+    def _fetch_next_files(self) -> torch.Tensor:
+        """Fetch next 2 files and add to current sequence."""
+        if self.file_idx >= len(self.files):
+            return torch.tensor([], dtype=torch.float32).reshape(0, 4)
+
+        end_idx = min(self.file_idx + 2, len(self.files))
+        next_files = self.files[self.file_idx:end_idx]
+        self.file_idx = end_idx
+
+        return self._load_and_concatenate_files(next_files)
+
+    def __len__(self):
+        return self.estimated_total_chunks
+
+    def __getitem__(self, idx):
+        # Check if we need more data
+        while self.current_sequence.shape[0] < self.max_seq_len:
+            new_data = self._fetch_next_files()
+            if new_data.shape[0] == 0:
+                break  # No more files
+            self.current_sequence = torch.cat([self.current_sequence, new_data], dim=0)
+
+        # Extract chunk
+        if self.current_sequence.shape[0] == 0:
+            # No data available, return dummy chunk
+            chunk = torch.zeros(self.max_seq_len, 4)
+            original_len = 0
+        else:
+            chunk_end = min(self.max_seq_len, self.current_sequence.shape[0])
+            chunk = self.current_sequence[:chunk_end]
+            original_len = chunk.shape[0]
+
+            # Remove served chunk from sequence
+            self.current_sequence = self.current_sequence[chunk_end:]
+            self.total_chunks_served += 1
+
+        # Create attention mask
+        attention_mask = torch.ones(self.max_seq_len, dtype=torch.long)
+
+        # Only pad if this is truly the last chunk of the epoch
+        is_last_chunk = (self.file_idx >= len(self.files) and
+                         self.current_sequence.shape[0] < self.max_seq_len)
+
+        if chunk.shape[0] < self.max_seq_len:
+            if is_last_chunk:
+                # Pad only at very end of epoch
+                pad_len = self.max_seq_len - chunk.shape[0]
+                last_time = chunk[-1, 0].item() if chunk.shape[0] > 0 else 0.0
+                pad_tensor = torch.tensor([last_time, 0.0, 2, 0]).repeat(pad_len, 1)
+                chunk = torch.cat([chunk, pad_tensor], dim=0)
+                attention_mask[original_len:] = 0
+            else:
+                # Don't pad, just return shorter chunk and adjust mask
+                temp_chunk = torch.zeros(self.max_seq_len, 4)
+                temp_chunk[:chunk.shape[0]] = chunk
+                chunk = temp_chunk
+                attention_mask[original_len:] = 0
+
+        # Create input_ids and labels
+        input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
+
+        # Labels are next 4D positions directly
+        labels = chunk[1:].clone()  # Next position prediction
+        last_position = chunk[-1:].clone()
+        labels = torch.cat([labels, last_position], dim=0)
+        labels[0:, 0] = labels[0:, 0] - chunk[0:, 0]
+
+        if original_len < self.max_seq_len:
+            labels[original_len:] = -100
+
+        return {
+            'input_ids': input_ids,
+            'position_tensors': chunk,
+            'labels': labels,
+            'attention_mask': attention_mask
+        }
 
 def custom_collate_fn(batch):
     """Custom collate function for chunked 4D positional data."""
