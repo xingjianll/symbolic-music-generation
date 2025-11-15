@@ -16,7 +16,7 @@ from sklearn.model_selection import train_test_split
 from src.utils import CONTEXT_SIZE, merge_score_tracks, handle_tempos, handle_key_sigs, handle_time_sigs
 from src.model.model import MidiQwenNew
 
-EPOCHS = 200
+EPOCHS = 600
 BATCH_SIZE = 32
 MAX_SEQ_LEN = CONTEXT_SIZE
 
@@ -400,7 +400,7 @@ def main():
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4DStreaming(train_files[:50], max_seq_len=MAX_SEQ_LEN)  # Start with subset
+    train_dataset = MidiDataset4D(train_files[:50], max_seq_len=MAX_SEQ_LEN)  # Start with subset
 
     print("Creating val dataset...")
     val_dataset = MidiDataset4D(train_files[:50], max_seq_len=MAX_SEQ_LEN)
@@ -451,7 +451,7 @@ def main():
     print("here20")
 
     # Create model
-    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=3e-4, warmup_steps=1000)
+    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=3e-4, warmup_steps=100)
     print("here30")
     # Create trainer
     trainer = pl.Trainer(
