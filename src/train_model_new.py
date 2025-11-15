@@ -370,10 +370,10 @@ def main():
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4D(train_files[:50], max_seq_len=MAX_SEQ_LEN)  # Start with subset
+    train_dataset = MidiDataset4D(train_files[:1], max_seq_len=MAX_SEQ_LEN)  # Start with subset
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4D(train_files[:50], max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4D(train_files[:1], max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -436,6 +436,7 @@ def main():
         num_sanity_val_steps=0,
     )
     print("here40")
+    print(train_files[:1])
 
     # Train
     trainer.fit(model, train_loader, val_loader)

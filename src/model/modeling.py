@@ -97,6 +97,40 @@ def rotate_half(x):
     return torch.stack([y_even, y_odd], dim=-1).reshape_as(x)
 
 
+def _compute_encoding(position_tensors: torch.Tensor) -> torch.Tensor:
+    """
+    Convert 4-D position indices into rotational encodings:
+    output shape: (B, S, 4, 2)
+    """
+    batch_size, seq_len, _ = position_tensors.shape
+
+    angles = []
+
+    for d in range(4):
+        pos_d = position_tensors[:, :, d:d + 1]  # (B, S, 1)
+
+        angle2 = None
+        if d <= 1:
+            angle = torch.pi * ((pos_d % 2) / 2)
+            angle2 = torch.pi * (pos_d / 64)
+        else:
+            angle = torch.pi * (pos_d / 128)
+
+        angles.append(angle)  # list of (B, S, 1)
+        if angle2 is not None:
+            angles.append(angle2)
+
+    # (B, S, 6)
+    all_freqs = torch.cat(angles, dim=-1)
+
+    # Compute cos and sin
+    cos_vals = all_freqs.cos()  # (B, S, 6)
+    sin_vals = all_freqs.sin()  # (B, S, 6)
+
+    # Stack last dimension → (B, S, 4, 2)
+    encoding = torch.stack((cos_vals, sin_vals), dim=-1)
+    return encoding
+
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """Applies Rotary Position Embedding to the query and key tensors.
@@ -474,41 +508,10 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         # LM head that outputs 4D positions directly
-        head_dim = getattr(config, "head_dim", 8)
-        self.lm_head = nn.Linear(config.hidden_size, 8, bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, 6*2, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
-
-    def _compute_encoding(self, position_tensors: torch.Tensor) -> torch.Tensor:
-        """
-        Convert 4-D position indices into rotational encodings:
-        output shape: (B, S, 4, 2)
-        """
-        batch_size, seq_len, _ = position_tensors.shape
-
-        angles = []
-
-        for d in range(4):
-            pos_d = position_tensors[:, :, d:d + 1]  # (B, S, 1)
-
-            if d <= 1:
-                angle = torch.pi * (pos_d / 64)
-            else:
-                angle = torch.pi * (pos_d / 128)
-
-            angles.append(angle)  # list of (B, S, 1)
-
-        # (B, S, 4)
-        all_freqs = torch.cat(angles, dim=-1)
-
-        # Compute cos and sin
-        cos_vals = all_freqs.cos()  # (B, S, 4)
-        sin_vals = all_freqs.sin()  # (B, S, 4)
-
-        # Stack last dimension → (B, S, 4, 2)
-        encoding = torch.stack((cos_vals, sin_vals), dim=-1)
-        return encoding
 
     @can_return_tuple
     @auto_docstring
@@ -563,12 +566,12 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        outputs_8d = self.lm_head(hidden_states[:, slice_indices, :])
+        outputs_new = self.lm_head(hidden_states[:, slice_indices, :])
 
         # Apply pairwise normalization to ensure unit vectors (as RoPE preserves norms)
-        # Reshape to pairs: (batch, seq, 8) -> (batch, seq, 4, 2)
-        batch_size, seq_len, _ = outputs_8d.shape
-        pairs = outputs_8d.view(batch_size, seq_len, 4, 2)
+        # Reshape to pairs: (batch, seq, 12) -> (batch, seq, 6, 2)
+        batch_size, seq_len, _ = outputs_new.shape
+        pairs = outputs_new.view(batch_size, seq_len, 6, 2)
 
         # Normalize each pair to unit vectors
         pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
@@ -577,13 +580,13 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         loss = None
         if labels is not None:
             # Compute rotational encoding of target values
-            target = self._compute_encoding(labels) # (batch, seq, 4, 2)
+            target = _compute_encoding(labels) # (batch, seq, 6, 2)
 
             # Mask out padded positions (where labels == -100)
             mask = (labels != -100).all(dim=-1)  # (batch*seq,)
             if mask.any():
-                pred = pred[mask]  # (N, 4, 2)
-                target = target[mask]  # (N, 4, 2)
+                pred = pred[mask]  # (N, 6, 2)
+                target = target[mask]  # (N, 6, 2)
 
                 # angular similarity between corresponding 2D pairs
                 cos_sim = (pred * target).sum(dim=-1)
@@ -592,11 +595,11 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                 if torch.rand(1).item() < 0.1:
                     print(f"loss: {loss.item():.3f}")
             else:
-                loss = torch.tensor(0.0, device=outputs_8d.device)
+                loss = torch.tensor(0.0, device=outputs_new.device)
 
         return CausalLMOutputWithPast(
             loss=loss,
-            logits=outputs_8d,  # Now contains 4D position outputs
+            logits=pred,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
