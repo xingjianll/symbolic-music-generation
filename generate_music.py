@@ -127,7 +127,7 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
     labels = batch['labels']
     labels = labels.to(device)
     original = position_tensors.clone()
-    position_tensors = position_tensors[:,:2,:].to(device)
+    position_tensors = position_tensors[:,:1,:].to(device)
     print(position_tensors)
 
     for step in range(total_length):
@@ -195,7 +195,6 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
 
         if step % 20 == 0:
             print(f"Generated {step}/{total_length}")
-        break
 
     # drop the BOS token
     notes = position_tensors[:, 1:, :].squeeze(0).cpu().numpy()
@@ -242,7 +241,7 @@ def main():
     generated_positions = generate_music(model, batch, total_length=args.length, device=args.device)
 
     # Convert to MIDI
-    # positions_to_midi(generated_positions, args.output)
+    positions_to_midi(generated_positions, args.output)
 
     print(f"Music generation complete! Check {args.output}")
 

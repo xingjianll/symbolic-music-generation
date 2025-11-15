@@ -361,7 +361,7 @@ def main():
     data_dir = project_dir / "data" / "aria-midi-v1-unique-ext" / "data"
 
     # Get all MIDI files
-    all_files = list(data_dir.glob("**/*.mid"))
+    all_files = list(sorted(data_dir.glob("**/*.mid")))
     print(f"Found {len(all_files)} MIDI files")
 
     # Split into train/val
@@ -370,10 +370,10 @@ def main():
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4D(train_files[:1], max_seq_len=MAX_SEQ_LEN)  # Start with subset
+    train_dataset = MidiDataset4D(train_files[:5000], max_seq_len=MAX_SEQ_LEN)  # Start with subset
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4D(train_files[:1], max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4D(val_files[:100], max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -403,7 +403,7 @@ def main():
         dirpath=project_dir / "checkpoints",
         filename="qwen-4d-{epoch:02d}-{step:05d}-{val_loss:.4f}",
         monitor='val_loss',
-        save_top_k=2,
+        save_top_k=5,
         save_last=True,
         mode='min',
         every_n_train_steps=steps_per_half_epoch,
@@ -421,7 +421,7 @@ def main():
     print("here20")
 
     # Create model
-    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=3e-4, warmup_steps=100)
+    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=5e-4, warmup_steps=100)
     print("here30")
     # Create trainer
     trainer = pl.Trainer(
@@ -436,7 +436,6 @@ def main():
         num_sanity_val_steps=0,
     )
     print("here40")
-    print(train_files[:1])
 
     # Train
     trainer.fit(model, train_loader, val_loader)
