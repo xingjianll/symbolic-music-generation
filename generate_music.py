@@ -108,6 +108,9 @@ def positions_to_midi(notes, output_path="generated.mid", ticks_per_beat=480):
     midi.save(output_path)
     print(f"Saved MIDI to {output_path}")
 
+def f(v, c):
+    return v//c*c
+
 from src.model.modeling import _compute_encoding
 @torch.no_grad()
 def generate_music(model, batch, total_length: int = 200, device='cuda'):
@@ -150,28 +153,40 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
         print((out.logits[0, -1, :, :] * t[0, 1, :, :]).sum(dim=-1))
         print("--------")
 
-        # angle of each pair (1,6)
+        # angle of each pair (1,16)
         angles = torch.atan2(pairs[..., 1], pairs[..., 0])
 
         # ----------------------------
         # Convert angles → positions
         # ----------------------------
-        # Continuous dims 0 and 1 (range 0–64 float)
-        pos0 = (angles[0,0] / torch.pi * 2).clamp(0, 2)
-        pos1 = (angles[0,1] / torch.pi * 64).clamp(0, 64)
-        pos1 = torch.floor(pos1 / 2) * 2
+        angles = (angles / torch.pi).clamp(0, 1)
+        pos0 = angles[0, 0] * 0.25
+        pos1 = angles[0, 1] * 1
+        pos2 = angles[0, 2] * 8
+        pos3 = angles[0, 3] * 64
 
-        pos2 = (angles[0,2] / torch.pi * 2).clamp(0, 2)
-        pos3 = (angles[0,3] / torch.pi * 64).clamp(0, 64)
-        pos3 = torch.floor(pos3 / 2) * 2
+        pos4 = angles[0, 4] * 0.25
+        pos5 = angles[0, 5] * 1
+        pos6 = angles[0, 6] * 8
+        pos7 = angles[0, 7] * 64
 
-        # Integer dims 4 and 5 (range 0–127)
-        pos4 = ((angles[0,4] / torch.pi * 128) % 128).round().clamp(0,127)
-        pos5 = ((angles[0,5] / torch.pi * 128) % 128).round().clamp(0,127)
+        pos8 = angles[0, 8] * 4
+        pos9 = angles[0, 9] * 16
+        pos10 = angles[0, 10] * 64
+        pos11 = angles[0, 11] * 128
 
-        next_pos = torch.stack([position_tensors[0, -1, 0]+pos0+pos1, pos2+pos3, pos4, pos5]).to(device)  # (4,)
-        next_pos = next_pos.unsqueeze(0).unsqueeze(0)                # (1,1,4)
-        print(pos0, pos1, pos2, pos3, pos4, pos5)
+        pos12 = angles[0, 12] * 4
+        pos13 = angles[0, 13] * 16
+        pos14 = angles[0, 14] * 64
+        pos15 = angles[0, 15] * 128
+
+        feature0 = f(pos3, 8) + f(pos2, 1) + f(pos1, 0.25) + pos0
+        feature1 = f(pos7, 8) + f(pos6, 1) + f(pos5, 0.25) + pos4
+        feature2 = f(pos11, 64) + f(pos10, 16) + f(pos9, 4) + pos8
+        feature3 = f(pos15, 64) + f(pos14, 16) + f(pos13, 4) + pos12
+        next_pos = torch.stack([position_tensors[0, -1, 0]+feature0, feature1, feature2, feature3]).to(device)
+        next_pos = next_pos.unsqueeze(0).unsqueeze(0)
+        print(next_pos)
 
         # append to the sequence
         position_tensors = torch.cat([position_tensors, next_pos], dim=1)

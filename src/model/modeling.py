@@ -109,25 +109,28 @@ def _compute_encoding(position_tensors: torch.Tensor) -> torch.Tensor:
     for d in range(4):
         pos_d = position_tensors[:, :, d:d + 1]  # (B, S, 1)
 
-        angle2 = None
         if d <= 1:
-            angle = torch.pi * ((pos_d % 2) / 2)
-            angle2 = torch.pi * (pos_d / 64)
+            angle0 = torch.pi * ((pos_d % 0.25) / 0.25)
+            angle1 = torch.pi * ((pos_d % 1) / 1)
+            angle2 = torch.pi * ((pos_d % 8) / 8)
+            angle3 = torch.pi * (pos_d / 64)
+
         else:
-            angle = torch.pi * (pos_d / 128)
+            angle0 = torch.pi * ((pos_d % 4) / 4)
+            angle1 = torch.pi * ((pos_d % 16) / 16)
+            angle2 = torch.pi * ((pos_d % 64) / 64)
+            angle3 = torch.pi * (pos_d / 128)
 
-        angles.append(angle)  # list of (B, S, 1)
-        if angle2 is not None:
-            angles.append(angle2)
+        angles.extend([angle0, angle1, angle2, angle3])
 
-    # (B, S, 6)
+    # (B, S, 16)
     all_freqs = torch.cat(angles, dim=-1)
 
     # Compute cos and sin
-    cos_vals = all_freqs.cos()  # (B, S, 6)
-    sin_vals = all_freqs.sin()  # (B, S, 6)
+    cos_vals = all_freqs.cos()  # (B, S, 16)
+    sin_vals = all_freqs.sin()  # (B, S, 16)
 
-    # Stack last dimension → (B, S, 4, 2)
+    # Stack last dimension → (B, S, 16, 2)
     encoding = torch.stack((cos_vals, sin_vals), dim=-1)
     return encoding
 
@@ -508,7 +511,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         # LM head that outputs 4D positions directly
-        self.lm_head = nn.Linear(config.hidden_size, 6*2, bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, 4*2*4, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -571,7 +574,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         # Apply pairwise normalization to ensure unit vectors (as RoPE preserves norms)
         # Reshape to pairs: (batch, seq, 12) -> (batch, seq, 6, 2)
         batch_size, seq_len, _ = outputs_new.shape
-        pairs = outputs_new.view(batch_size, seq_len, 6, 2)
+        pairs = outputs_new.view(batch_size, seq_len, 4*4, 2)
 
         # Normalize each pair to unit vectors
         pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
