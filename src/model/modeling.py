@@ -124,11 +124,11 @@ def _compute_encoding(position_tensors: torch.Tensor) -> torch.Tensor:
         angles.extend([angle0, angle1, angle2, angle3])
 
     # (B, S, 16)
-    all_freqs = torch.cat(angles, dim=-1)
+    angles = torch.cat(angles, dim=-1)
 
     # Compute cos and sin
-    cos_vals = all_freqs.cos()  # (B, S, 16)
-    sin_vals = all_freqs.sin()  # (B, S, 16)
+    cos_vals = angles.cos()  # (B, S, 16)
+    sin_vals = angles.sin()  # (B, S, 16)
 
     # Stack last dimension → (B, S, 16, 2)
     encoding = torch.stack((cos_vals, sin_vals), dim=-1)
@@ -196,6 +196,7 @@ def eager_attention_forward(
         dropout: float = 0.0,
         **kwargs: Unpack[TransformersKwargs],
 ):
+    # attention_mask=None
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
 
@@ -206,11 +207,11 @@ def eager_attention_forward(
 
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
     attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
+    module._test_attn_w = attn_weights[0,0,0,:].detach().cpu().clone()
     attn_output = torch.matmul(attn_weights, value_states)
     attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, attn_weights
-
 
 class Qwen3Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
@@ -268,8 +269,13 @@ class Qwen3Attention(nn.Module):
             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        # if self.config._attn_implementation != "eager":
+        #     attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+
+        if self.layer_idx == 0:
+            self._q = query_states[0, 0, 0].detach().cpu().clone()
+            self._k = key_states[0, 0, 0].detach().cpu().clone()
+            self._v = value_states[0, 0, 0].detach().cpu().clone()
 
         attn_output, attn_weights = attention_interface(
             self,
@@ -279,13 +285,17 @@ class Qwen3Attention(nn.Module):
             attention_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
-            sliding_window=self.sliding_window,  # diff with Llama
             **kwargs,
         )
+        if self.layer_idx == 0:
+            self._attn_out = attn_output[0, 0].detach().cpu().clone()
         attn_output = attn_output.transpose(1, 2)
         attn_output = apply_rotary_pos_emb_T(attn_output, cos, sin)
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
+        if self.layer_idx == 0:
+            self._debug_first_hidden = attn_output[0, 0].detach().cpu().clone()
+
         return attn_output, attn_weights
 
 
@@ -295,6 +305,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         self.hidden_size = config.hidden_size
 
         self.self_attn = Qwen3Attention(config=config, layer_idx=layer_idx)
+        self.layer_idx = layer_idx
 
         self.mlp = Qwen3MLP(config)
         self.input_layernorm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -412,6 +423,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
             position_ids = cache_position.unsqueeze(0)
 
         # It may already have been prepared by e.g. `generate`
+        print(attention_mask)
         if not isinstance(causal_mask_mapping := attention_mask, dict):
             # Prepare mask arguments
             mask_kwargs = {
@@ -426,10 +438,23 @@ class Qwen3Model(Qwen3PreTrainedModel):
             causal_mask_mapping = {
                 "full_attention": create_causal_mask(**mask_kwargs),
             }
+            print(f"[DEBUG INPUT attention_mask SHAPE] {attention_mask.shape if attention_mask is not None else None}")
             # The sliding window alternating layers are not always activated depending on the config
             if self.has_sliding_layers:
                 causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)
 
+        # 🚨🚨🚨 DEBUG ATTENTION MASK 🚨🚨🚨
+        full_mask = causal_mask_mapping["full_attention"]
+        if full_mask is None:
+            print("[DEBUG] HF returned causal_mask = None")
+        else:
+            print(f"[DEBUG OUTPUT causal_mask SHAPE] {full_mask.shape}")
+
+            # Print top-left 10×10 block (batch=0, head=0)
+            sq = full_mask[0, 0, :5, :5]  # (5, 5)
+
+            print("[DEBUG causal_mask[0,0,:,:] (top-left 5×5)]")
+            print(sq)
         hidden_states = inputs_embeds
         rotary_pos_emb = self.rot_pos_emb(position_tensors)
         # Convert frequencies to cos and sin for RoPE
@@ -554,6 +579,8 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
+        B, S = position_tensors.shape[:2]
+        input_ids = torch.zeros((B, S), device=position_tensors.device, dtype=position_tensors.dtype)
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -579,17 +606,18 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         # Normalize each pair to unit vectors
         pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
         pred = pairs / (pair_norms + 1e-8)  # Add small epsilon for numerical stability
+        out = pred
 
         loss = None
         if labels is not None:
             # Compute rotational encoding of target values
-            target = _compute_encoding(labels) # (batch, seq, 6, 2)
+            target = _compute_encoding(labels) # (batch, seq, 16, 2)
 
             # Mask out padded positions (where labels == -100)
             mask = (labels != -100).all(dim=-1)  # (batch*seq,)
             if mask.any():
-                pred = pred[mask]  # (N, 6, 2)
-                target = target[mask]  # (N, 6, 2)
+                pred = pred[mask]  # (N, 16, 2)
+                target = target[mask]  # (N, 16, 2)
 
                 # angular similarity between corresponding 2D pairs
                 cos_sim = (pred * target).sum(dim=-1)
@@ -602,7 +630,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
         return CausalLMOutputWithPast(
             loss=loss,
-            logits=pred,
+            logits=out,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,

@@ -158,7 +158,6 @@ class MidiDataset4D(Dataset):
         # Concatenate all pieces
         if all_tensors:
             concatenated = torch.cat(all_tensors, dim=0)
-            print(f"Concatenated {len(all_tensors)} files into {concatenated.shape[0]} total vectors")
             return concatenated
         else:
             return torch.tensor([], dtype=torch.float32).reshape(0, 4)
@@ -341,11 +340,17 @@ class MidiDataset4DStreaming(MidiDataset4D):
         }
 
 def custom_collate_fn(batch):
-    """Custom collate function for chunked 4D positional data."""
-    input_ids_batch = torch.stack([item['input_ids'] for item in batch])
-    position_tensors_batch = torch.stack([item['position_tensors'] for item in batch])
-    labels_batch = torch.stack([item['labels'] for item in batch])
-    attention_mask_batch = torch.stack([item['attention_mask'] for item in batch])
+    """Repeat the single dataset item BATCH_SIZE times."""
+
+    assert len(batch) == 1, "Dataset should return exactly one item"
+
+    item = batch[0]
+
+    # Repeat fields BATCH_SIZE times
+    input_ids_batch = item['input_ids'].unsqueeze(0).repeat(BATCH_SIZE, 1)
+    position_tensors_batch = item['position_tensors'].unsqueeze(0).repeat(BATCH_SIZE, 1, 1)
+    labels_batch = item['labels'].unsqueeze(0).repeat(BATCH_SIZE, 1, 1)
+    attention_mask_batch = item['attention_mask'].unsqueeze(0).repeat(BATCH_SIZE, 1)
 
     return {
         'input_ids': input_ids_batch,
@@ -370,10 +375,10 @@ def main():
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4D(train_files[:5000], max_seq_len=MAX_SEQ_LEN)  # Start with subset
+    train_dataset = MidiDataset4DStreaming(train_files[:1], max_seq_len=MAX_SEQ_LEN)  # Start with subset
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4D(val_files[:100], max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4D(train_files[:1], max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -436,6 +441,7 @@ def main():
         num_sanity_val_steps=0,
     )
     print("here40")
+    print(train_files[:1])
 
     # Train
     trainer.fit(model, train_loader, val_loader)

@@ -111,6 +111,43 @@ def positions_to_midi(notes, output_path="generated.mid", ticks_per_beat=480):
 def f(v, c):
     return v//c*c
 
+
+def process_last_logits(pairs, device='cuda'):
+    # angle of each pair (1,16)
+    angles = torch.atan2(pairs[..., 1], pairs[..., 0])
+
+    # ----------------------------
+    # Convert angles → positions
+    # ----------------------------
+    angles = (angles / torch.pi).clamp(0, 1)
+    pos0 = angles[0] * 0.25
+    pos1 = angles[1] * 1
+    pos2 = angles[2] * 8
+    pos3 = angles[3] * 64
+
+    pos4 = angles[4] * 0.25
+    pos5 = angles[5] * 1
+    pos6 = angles[6] * 8
+    pos7 = angles[7] * 64
+
+    pos8 = angles[8] * 4
+    pos9 = angles[9] * 16
+    pos10 = angles[10] * 64
+    pos11 = angles[11] * 128
+
+    pos12 = angles[12] * 4
+    pos13 = angles[13] * 16
+    pos14 = angles[14] * 64
+    pos15 = angles[15] * 128
+
+    feature0 = f(pos3, 8) + f(pos2, 1) + f(pos1, 0.25) + pos0
+    feature1 = f(pos7, 8) + f(pos6, 1) + f(pos5, 0.25) + pos4
+    feature2 = f(pos11, 64) + f(pos10, 16) + f(pos9, 4) + pos8
+    feature3 = f(pos15, 64) + f(pos14, 16) + f(pos13, 4) + pos12
+    next_pos = torch.stack([feature0, feature1, feature2, feature3]).to(device)
+    next_pos = next_pos.unsqueeze(0).unsqueeze(0)
+    return next_pos
+
 from src.model.modeling import _compute_encoding
 @torch.no_grad()
 def generate_music(model, batch, total_length: int = 200, device='cuda'):
@@ -123,82 +160,66 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
 
     # BOS = [0,0,0,0]
     # generated = torch.zeros(1, 1, 4, device=device)
-    position_tensors = batch['position_tensors']
-    labels = batch['labels']
-    labels = labels.to(device)
-    original = position_tensors.clone()
-    position_tensors = position_tensors[:,:1,:].to(device)
-    print(position_tensors)
+    batch['input_ids'] = batch['input_ids'].to(device)
+    batch['attention_mask'] = batch['attention_mask'].to(device)
+    batch['position_tensors'] = batch['position_tensors'].to(device)
+    batch['labels'] = batch['labels'].to(device)
 
-    for step in range(total_length):
-
-        # attention mask = ones because every pos is valid
-        attn_mask = torch.ones(position_tensors.shape[:-1], device=device)  # (1, seq)
-        input_ids = torch.zeros(position_tensors.shape[:-1], dtype=torch.long, device=device)
-
-        # run model
+    print(batch['position_tensors'].shape)
+    print(batch['labels'].shape)
+    model.eval()
+    with torch.no_grad():
         out = model(
-            input_ids=input_ids,
-            attention_mask=attn_mask,
-            position_tensors=position_tensors
+            input_ids=batch['input_ids'][0:1, :],
+            attention_mask=batch['attention_mask'][0:1, :],
+            position_tensors=batch['position_tensors'][0:1, :,:],
+        )
+    att = model.model.model.layers[0].self_attn._attn_out
+    hid1 = model.model.model.layers[0].self_attn._debug_first_hidden
+    q = model.model.model.layers[0].self_attn._q
+    k = model.model.model.layers[0].self_attn._k
+    v = model.model.model.layers[0].self_attn._v
+    aw = model.model.model.layers[0].self_attn._test_attn_w
+
+    with torch.no_grad():
+        L = 1
+        # --- RUN MODEL ---
+        out = model(
+            input_ids=batch['input_ids'][0:1, 0:L],
+            attention_mask=batch['attention_mask'][0:1, 0:L],
+            position_tensors=batch['position_tensors'][0:1, 0:L,:],
         )
 
-        # model returns logits: (1, seq, 4, 2)
-        pairs = out.logits[:, -1, :, :]
-        t = _compute_encoding(labels)
-        print("--------")
-        print(labels[0, 1, :])
-        print(t[0, 1, :, :])
-        print(out.logits[0, -1, :, :])
-        print((out.logits[0, -1, :, :] * t[0, 1, :, :]).sum(dim=-1))
-        print("--------")
+    att2 = model.model.model.layers[0].self_attn._attn_out
+    hid2 = model.model.model.layers[0].self_attn._debug_first_hidden
+    q2 = model.model.model.layers[0].self_attn._q
+    k2 = model.model.model.layers[0].self_attn._k
+    v2 = model.model.model.layers[0].self_attn._v
+    aw2 = model.model.model.layers[0].self_attn._test_attn_w
 
-        # angle of each pair (1,16)
-        angles = torch.atan2(pairs[..., 1], pairs[..., 0])
+    q_diff = (q - q2).abs().max().item()
+    k_diff = (k - k2).abs().max().item()
+    v_diff = (v - v2).abs().max().item()
 
-        # ----------------------------
-        # Convert angles → positions
-        # ----------------------------
-        angles = (angles / torch.pi).clamp(0, 1)
-        pos0 = angles[0, 0] * 0.25
-        pos1 = angles[0, 1] * 1
-        pos2 = angles[0, 2] * 8
-        pos3 = angles[0, 3] * 64
+    print("\n===== attention weights =====")
+    print(aw)
+    print(aw2)
 
-        pos4 = angles[0, 4] * 0.25
-        pos5 = angles[0, 5] * 1
-        pos6 = angles[0, 6] * 8
-        pos7 = angles[0, 7] * 64
+    print("\n===== Q/K/V DIFFS =====")
+    print(f"max |Q_full - Q_masked| = {q_diff}")
+    print(f"max |K_full - K_masked| = {k_diff}")
+    print(f"max |V_full - V_masked| = {v_diff}")
 
-        pos8 = angles[0, 8] * 4
-        pos9 = angles[0, 9] * 16
-        pos10 = angles[0, 10] * 64
-        pos11 = angles[0, 11] * 128
+    diff = (att2 - att).abs().max()
+    print("max diff attn head 0 batch 0 seq 0:", diff.item())
 
-        pos12 = angles[0, 12] * 4
-        pos13 = angles[0, 13] * 16
-        pos14 = angles[0, 14] * 64
-        pos15 = angles[0, 15] * 128
+    diff = (hid1 - hid2).abs().max()
+    print("max diff hidden batch 0 seq 0:", diff.item())
 
-        feature0 = f(pos3, 8) + f(pos2, 1) + f(pos1, 0.25) + pos0
-        feature1 = f(pos7, 8) + f(pos6, 1) + f(pos5, 0.25) + pos4
-        feature2 = f(pos11, 64) + f(pos10, 16) + f(pos9, 4) + pos8
-        feature3 = f(pos15, 64) + f(pos14, 16) + f(pos13, 4) + pos12
-        next_pos = torch.stack([position_tensors[0, -1, 0]+feature0, feature1, feature2, feature3]).to(device)
-        next_pos = next_pos.unsqueeze(0).unsqueeze(0)
-        print(next_pos)
+    print(process_last_logits(out.logits[0,0,:,:]))
+    print(batch['labels'][0,0,:])
 
-        # append to the sequence
-        position_tensors = torch.cat([position_tensors, next_pos], dim=1)
-        print(original[0, 2, :])
-        print(labels[0, 1, :])
-
-        if step % 20 == 0:
-            print(f"Generated {step}/{total_length}")
-
-    # drop the BOS token
-    notes = position_tensors[:, 1:, :].squeeze(0).cpu().numpy()
-    return notes
+    return None
 
 
 def main():
@@ -218,7 +239,7 @@ def main():
     data_dir = project_dir / "data" / "aria-midi-v1-unique-ext" / "data"
 
     # Get all MIDI files
-    all_files = list(data_dir.glob("**/*.mid"))
+    all_files = list(sorted(data_dir.glob("**/*.mid")))
     from sklearn.model_selection import train_test_split
     train_files, val_files = train_test_split(all_files, test_size=0.05, random_state=42)
     print(train_files[:1])
@@ -236,12 +257,11 @@ def main():
     )
     val_iter = iter(val_loader)
     batch = next(val_iter)
-    print(batch['position_tensors'])
 
     generated_positions = generate_music(model, batch, total_length=args.length, device=args.device)
 
     # Convert to MIDI
-    positions_to_midi(generated_positions, args.output)
+    # positions_to_midi(generated_positions, args.output)
 
     print(f"Music generation complete! Check {args.output}")
 
