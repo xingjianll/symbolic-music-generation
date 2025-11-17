@@ -269,32 +269,32 @@ class Qwen3Attention(nn.Module):
             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         attention_interface: Callable = eager_attention_forward
-        # if self.config._attn_implementation != "eager":
-        #     attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
-
-        if self.layer_idx == 0:
-            self._q = query_states[0, 0, 0].detach().cpu().clone()
-            self._k = key_states[0, 0, 0].detach().cpu().clone()
-            self._v = value_states[0, 0, 0].detach().cpu().clone()
+        if self.config._attn_implementation != "eager":
+            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        #
+        # if self.layer_idx == 0:
+        #     self._q = query_states[0, 0, 0].detach().cpu().clone()
+        #     self._k = key_states[0, 0, 0].detach().cpu().clone()
+        #     self._v = value_states[0, 0, 0].detach().cpu().clone()
 
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
             key_states,
             value_states,
-            attention_mask,
+            None,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
             **kwargs,
         )
-        if self.layer_idx == 0:
-            self._attn_out = attn_output[0, 0].detach().cpu().clone()
+        # if self.layer_idx == 0:
+        #     self._attn_out = attn_output[0, 0].detach().cpu().clone()
         attn_output = attn_output.transpose(1, 2)
         attn_output = apply_rotary_pos_emb_T(attn_output, cos, sin)
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
-        if self.layer_idx == 0:
-            self._debug_first_hidden = attn_output[0, 0].detach().cpu().clone()
+        # if self.layer_idx == 0:
+        #     self._debug_first_hidden = attn_output[0, 0].detach().cpu().clone()
 
         return attn_output, attn_weights
 
@@ -423,7 +423,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
             position_ids = cache_position.unsqueeze(0)
 
         # It may already have been prepared by e.g. `generate`
-        print(attention_mask)
+        # print(attention_mask)
         if not isinstance(causal_mask_mapping := attention_mask, dict):
             # Prepare mask arguments
             mask_kwargs = {
@@ -438,23 +438,23 @@ class Qwen3Model(Qwen3PreTrainedModel):
             causal_mask_mapping = {
                 "full_attention": create_causal_mask(**mask_kwargs),
             }
-            print(f"[DEBUG INPUT attention_mask SHAPE] {attention_mask.shape if attention_mask is not None else None}")
+            # print(f"[DEBUG INPUT attention_mask SHAPE] {attention_mask.shape if attention_mask is not None else None}")
             # The sliding window alternating layers are not always activated depending on the config
             if self.has_sliding_layers:
                 causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)
 
-        # 🚨🚨🚨 DEBUG ATTENTION MASK 🚨🚨🚨
-        full_mask = causal_mask_mapping["full_attention"]
-        if full_mask is None:
-            print("[DEBUG] HF returned causal_mask = None")
-        else:
-            print(f"[DEBUG OUTPUT causal_mask SHAPE] {full_mask.shape}")
-
-            # Print top-left 10×10 block (batch=0, head=0)
-            sq = full_mask[0, 0, :5, :5]  # (5, 5)
-
-            print("[DEBUG causal_mask[0,0,:,:] (top-left 5×5)]")
-            print(sq)
+        # # 🚨🚨🚨 DEBUG ATTENTION MASK 🚨🚨🚨
+        # full_mask = causal_mask_mapping["full_attention"]
+        # if full_mask is None:
+        #     print("[DEBUG] HF returned causal_mask = None")
+        # else:
+        #     print(f"[DEBUG OUTPUT causal_mask SHAPE] {full_mask.shape}")
+        #
+        #     # Print top-left 10×10 block (batch=0, head=0)
+        #     sq = full_mask[0, 0, :5, :5]  # (5, 5)
+        #
+        #     print("[DEBUG causal_mask[0,0,:,:] (top-left 5×5)]")
+        #     print(sq)
         hidden_states = inputs_embeds
         rotary_pos_emb = self.rot_pos_emb(position_tensors)
         # Convert frequencies to cos and sin for RoPE
