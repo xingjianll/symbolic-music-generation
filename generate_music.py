@@ -111,6 +111,8 @@ def positions_to_midi(notes, output_path="generated.mid", ticks_per_beat=480):
 def f(v, c):
     return v//c*c
 
+def f2(v, c):
+    return round(v / c) * c
 
 def process_last_logits(pairs, device='cuda'):
     # angle of each pair (1,16)
@@ -175,11 +177,13 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
             position_tensors=batch['position_tensors'][0:1, :,:],
         )
     att = model.model.model.layers[0].self_attn._attn_out
+    print("att shape:", att.shape)
+    be1 = model.model.model.layers[0].self_attn._debug_before_proj
     hid1 = model.model.model.layers[0].self_attn._debug_first_hidden
     q = model.model.model.layers[0].self_attn._q
     k = model.model.model.layers[0].self_attn._k
     v = model.model.model.layers[0].self_attn._v
-    aw = model.model.model.layers[0].self_attn._test_attn_w
+    # aw = model.model.model.layers[0].self_attn._test_attn_w
 
     with torch.no_grad():
         L = 1
@@ -191,19 +195,21 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
         )
 
     att2 = model.model.model.layers[0].self_attn._attn_out
+    print("att shape:", att2.shape)
+    be2 = model.model.model.layers[0].self_attn._debug_before_proj
     hid2 = model.model.model.layers[0].self_attn._debug_first_hidden
     q2 = model.model.model.layers[0].self_attn._q
     k2 = model.model.model.layers[0].self_attn._k
     v2 = model.model.model.layers[0].self_attn._v
-    aw2 = model.model.model.layers[0].self_attn._test_attn_w
+    # aw2 = model.model.model.layers[0].self_attn._test_attn_w
 
     q_diff = (q - q2).abs().max().item()
     k_diff = (k - k2).abs().max().item()
     v_diff = (v - v2).abs().max().item()
 
-    print("\n===== attention weights =====")
-    print(aw)
-    print(aw2)
+    # print("\n===== attention weights =====")
+    # print(aw)
+    # print(aw2)
 
     print("\n===== Q/K/V DIFFS =====")
     print(f"max |Q_full - Q_masked| = {q_diff}")
@@ -211,7 +217,10 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
     print(f"max |V_full - V_masked| = {v_diff}")
 
     diff = (att2 - att).abs().max()
-    print("max diff attn head 0 batch 0 seq 0:", diff.item())
+    print("max diff attn batch 0 seq 0:", diff.item())
+
+    diff = (be1 - be2).abs().max()
+    print("max diff before projection batch 0 seq 0:", diff.item())
 
     diff = (hid1 - hid2).abs().max()
     print("max diff hidden batch 0 seq 0:", diff.item())

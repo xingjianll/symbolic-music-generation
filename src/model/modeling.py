@@ -97,6 +97,10 @@ def rotate_half(x):
     return torch.stack([y_even, y_odd], dim=-1).reshape_as(x)
 
 
+def f(v, c):
+    return v//c*c
+
+
 def _compute_encoding(position_tensors: torch.Tensor) -> torch.Tensor:
     """
     Convert 4-D position indices into rotational encodings:
@@ -111,15 +115,14 @@ def _compute_encoding(position_tensors: torch.Tensor) -> torch.Tensor:
 
         if d <= 1:
             angle0 = torch.pi * ((pos_d % 0.25) / 0.25)
-            angle1 = torch.pi * ((pos_d % 1) / 1)
-            angle2 = torch.pi * ((pos_d % 8) / 8)
-            angle3 = torch.pi * (pos_d / 64)
-
+            angle1 = torch.pi * (f(pos_d % 1, 0.25) / 1)
+            angle2 = torch.pi * (f(pos_d % 8, 1) / 8)
+            angle3 = torch.pi * (f(pos_d, 8) / 64)
         else:
             angle0 = torch.pi * ((pos_d % 4) / 4)
-            angle1 = torch.pi * ((pos_d % 16) / 16)
-            angle2 = torch.pi * ((pos_d % 64) / 64)
-            angle3 = torch.pi * (pos_d / 128)
+            angle1 = torch.pi * (f(pos_d % 16, 4) / 16)
+            angle2 = torch.pi * (f(pos_d % 64, 16) / 64)
+            angle3 = torch.pi * (f(pos_d, 64) / 128)
 
         angles.extend([angle0, angle1, angle2, angle3])
 
@@ -207,7 +210,7 @@ def eager_attention_forward(
 
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
     attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
-    module._test_attn_w = attn_weights[0,0,0,:].detach().cpu().clone()
+    # module._test_attn_w = attn_weights[0,0,0,:].detach().cpu().clone()
     attn_output = torch.matmul(attn_weights, value_states)
     attn_output = attn_output.transpose(1, 2).contiguous()
 
@@ -282,19 +285,25 @@ class Qwen3Attention(nn.Module):
             query_states,
             key_states,
             value_states,
-            None,
+            attention_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
             **kwargs,
         )
         # if self.layer_idx == 0:
         #     self._attn_out = attn_output[0, 0].detach().cpu().clone()
-        attn_output = attn_output.transpose(1, 2)
+        #     print("attnout shape:", attn_output.shape)
+
+        attn_output = attn_output.permute(0, 2, 1, 3).contiguous() # need for rope
         attn_output = apply_rotary_pos_emb_T(attn_output, cos, sin)
-        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = attn_output.permute(0, 2, 1, 3).contiguous()
+        attn_output = attn_output.reshape(*input_shape, -1)
+
         attn_output = self.o_proj(attn_output)
         # if self.layer_idx == 0:
         #     self._debug_first_hidden = attn_output[0, 0].detach().cpu().clone()
+        #     print("input_shape shape:", input_shape)
+        #     print("hiddn shape:", attn_output.shape)
 
         return attn_output, attn_weights
 

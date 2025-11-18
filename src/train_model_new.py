@@ -48,56 +48,6 @@ def _create_position_tensors(notes, score: ScoreSecond) -> torch.Tensor:
     return torch.tensor(positions, dtype=torch.float32)
 
 
-def create_rope_targets(position_tensors: torch.Tensor, head_dim: int = 128) -> torch.Tensor:
-    """
-    Create RoPE-rotated targets from 4D position tensors.
-
-    For base vector [1, 0, 1, 0, ...], RoPE rotation gives [cos(f1), sin(f1), cos(f2), sin(f2), ...]
-
-    Args:
-        position_tensors: (seq_len, 4) tensor of [start_time, duration, pitch, velocity]
-        head_dim: dimension of attention heads
-
-    Returns:
-        torch.Tensor: (seq_len, head_dim) rotated representations
-    """
-    seq_len = position_tensors.shape[0]
-    device = position_tensors.device
-    theta = 10000
-
-    # Create frequency bands (same calculation as rot_pos_emb)
-    freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / head_dim))
-
-    frequencies = []
-    for d in range(4):  # For each of the 4 position dimensions
-        # Get positions for this dimension: (seq_len, 1)
-        pos_d = position_tensors[:, d:d + 1]
-
-        # Apply frequency bands to this position dimension
-        dim_frequencies = pos_d * freq_bands  # (seq_len, head_dim//8)
-
-        # Duplicate each frequency to create pairs (matching RoPE paper)
-        dim_frequencies = dim_frequencies.repeat_interleave(2, dim=-1)  # (seq_len, head_dim//4)
-
-        frequencies.append(dim_frequencies)
-
-    # Concatenate frequencies from all 4 dimensions
-    all_freqs = torch.cat(frequencies, dim=-1)  # (seq_len, head_dim)
-
-    # For base vector [1, 0, 1, 0, ...], RoPE gives [cos, sin, cos, sin, ...]
-    # So we just need to interleave cos and sin values
-    cos_vals = all_freqs.cos()  # (seq_len, head_dim)
-    sin_vals = all_freqs.sin()  # (seq_len, head_dim)
-
-    # Create the rotated representation: [cos(f1), sin(f1), cos(f2), sin(f2), ...]
-    rotated = torch.zeros_like(all_freqs)
-    rotated[:, 0::2] = cos_vals[:, 0::2]  # Even indices get cos
-    rotated[:, 1::2] = sin_vals[:, 1::2]  # Odd indices get sin
-
-    return rotated
-
-
-
 class MidiDataset4D(Dataset):
     """Dataset that concatenates all MIDI files and chunks for pretraining."""
 
