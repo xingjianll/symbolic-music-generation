@@ -9,14 +9,13 @@ from torch.utils.data import DataLoader, Dataset
 import lightning as pl
 import torch
 from torch.nn.utils.rnn import pad_sequence
-import numpy as np
 import symusic
 from sklearn.model_selection import train_test_split
 
 from src.utils import CONTEXT_SIZE, merge_score_tracks, handle_tempos, handle_key_sigs, handle_time_sigs
 from src.model.model import MidiQwenNew
 
-EPOCHS = 1000
+EPOCHS = 256
 BATCH_SIZE = 32
 MAX_SEQ_LEN = CONTEXT_SIZE
 
@@ -290,17 +289,11 @@ class MidiDataset4DStreaming(MidiDataset4D):
         }
 
 def custom_collate_fn(batch):
-    """Repeat the single dataset item BATCH_SIZE times."""
-
-    assert len(batch) == 1, "Dataset should return exactly one item"
-
-    item = batch[0]
-
-    # Repeat fields BATCH_SIZE times
-    input_ids_batch = item['input_ids'].unsqueeze(0).repeat(BATCH_SIZE, 1)
-    position_tensors_batch = item['position_tensors'].unsqueeze(0).repeat(BATCH_SIZE, 1, 1)
-    labels_batch = item['labels'].unsqueeze(0).repeat(BATCH_SIZE, 1, 1)
-    attention_mask_batch = item['attention_mask'].unsqueeze(0).repeat(BATCH_SIZE, 1)
+    """Custom collate function for chunked 4D positional data."""
+    input_ids_batch = torch.stack([item['input_ids'] for item in batch])
+    position_tensors_batch = torch.stack([item['position_tensors'] for item in batch])
+    labels_batch = torch.stack([item['labels'] for item in batch])
+    attention_mask_batch = torch.stack([item['attention_mask'] for item in batch])
 
     return {
         'input_ids': input_ids_batch,
@@ -325,10 +318,10 @@ def main():
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4DStreaming(train_files[:1], max_seq_len=MAX_SEQ_LEN)  # Start with subset
+    train_dataset = MidiDataset4DStreaming(train_files, max_seq_len=MAX_SEQ_LEN)
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4D(train_files[:1], max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4D(val_files, max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -376,7 +369,7 @@ def main():
     print("here20")
 
     # Create model
-    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=5e-4, warmup_steps=100)
+    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=3e-4, warmup_steps=500)
     print("here30")
     # Create trainer
     trainer = pl.Trainer(
