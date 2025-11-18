@@ -55,57 +55,57 @@ def load_model_from_checkpoint(checkpoint_path: str, device='cuda'):
 
     return model
 
-
-import torch
 import numpy as np
-
-from mido import Message, MidiFile, MidiTrack, MetaMessage
 import mido
-def positions_to_midi(notes, output_path="generated.mid", ticks_per_beat=480):
+from mido import Message, MidiFile, MidiTrack, bpm2tempo
+
+def notes_to_midi(notes_array, output_path, tempo=120):
     """
-    notes: [start_seconds, duration_seconds, pitch, velocity]
+    Convert a numpy array of [start_sec, duration_sec, pitch, velocity]
+    into a MIDI file using mido (supports overlapping same-pitch notes).
     """
 
-    import mido
-    from mido import Message, MidiFile, MidiTrack, MetaMessage
-
-    midi = MidiFile(ticks_per_beat=ticks_per_beat)
+    mid = MidiFile()
     track = MidiTrack()
-    midi.tracks.append(track)
+    mid.tracks.append(track)
 
-    # Tempo: 120 BPM
-    tempo = mido.bpm2tempo(120)
-    track.append(MetaMessage('set_tempo', tempo=tempo))
+    # Set tempo
+    track.append(mido.MetaMessage('set_tempo', tempo=bpm2tempo(tempo)))
 
-    # seconds → ticks conversion
-    def seconds_to_ticks(t):
-        return int(t * ticks_per_beat * 1_000_000 / tempo)
+    # Convert seconds to ticks
+    ticks_per_beat = mid.ticks_per_beat
+    sec_to_ticks = (tempo / 60.0) * ticks_per_beat
 
-    # Sort by start time
-    notes_sorted = sorted(notes, key=lambda x: x[0])
+    events = []
 
-    last_tick = 0
+    for start, duration, pitch, velocity in notes_array:
 
-    for (start_sec, dur_sec, pitch, velocity) in notes_sorted:
-        pitch = int(pitch)
-        velocity = int(velocity)
+        start_ticks = int(start * sec_to_ticks)
+        end_ticks = int((start + duration) * sec_to_ticks)
 
-        start_tick = seconds_to_ticks(start_sec)
-        dur_tick = seconds_to_ticks(dur_sec)
+        pitch = int(np.clip(pitch, 0, 127))
+        velocity = int(np.clip(velocity, 0, 127))
 
-        # delta time relative to previous event
-        delta = max(0, start_tick - last_tick)
+        # Add separate ON and OFF events
+        events.append((start_ticks,  Message('note_on',  note=pitch, velocity=velocity)))
+        events.append((end_ticks,    Message('note_off', note=pitch, velocity=0)))
 
-        # Note on
-        track.append(Message('note_on', note=pitch, velocity=velocity, time=delta))
+    # Sort all events by time
+    events.sort(key=lambda x: x[0])
 
-        # Note off
-        track.append(Message('note_off', note=pitch, velocity=0, time=dur_tick))
+    # Insert with delta times
+    last_time = 0
+    for abs_time, msg in events:
+        delta = abs_time - last_time
+        msg.time = delta
+        last_time = abs_time
+        track.append(msg)
 
-        last_tick = start_tick + dur_tick
+    mid.save(output_path)
+    print(f"MIDI saved to {output_path}")
 
-    midi.save(output_path)
-    print(f"Saved MIDI to {output_path}")
+
+
 
 def f(v, c):
     return v//c*c
