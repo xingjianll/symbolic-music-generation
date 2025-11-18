@@ -10,6 +10,7 @@ import torch
 import numpy as np
 from pathlib import Path
 import symusic
+
 from src.model.model import MidiQwenNew
 from src.train_model_new import MidiDataset4DStreaming, MidiDataset4D, custom_collate_fn
 from src.utils import CONTEXT_SIZE
@@ -62,48 +63,46 @@ from mido import Message, MidiFile, MidiTrack, MetaMessage
 import mido
 def positions_to_midi(notes, output_path="generated.mid", ticks_per_beat=480):
     """
-    Convert generated note vectors into a MIDI file.
-
-    notes: array-like of shape (N, 4)
-           columns = [start_time, duration, pitch, velocity]
-
-    Output:
-        generated.mid
+    notes: [start_seconds, duration_seconds, pitch, velocity]
     """
+
+    import mido
+    from mido import Message, MidiFile, MidiTrack, MetaMessage
 
     midi = MidiFile(ticks_per_beat=ticks_per_beat)
     track = MidiTrack()
     midi.tracks.append(track)
 
-    # Add tempo (120 BPM)
-    track.append(MetaMessage('set_tempo', tempo=mido.bpm2tempo(120)))
+    # Tempo: 120 BPM
+    tempo = mido.bpm2tempo(120)
+    track.append(MetaMessage('set_tempo', tempo=tempo))
 
-    # Convert continuous times to ticks
-    def to_ticks(time_in_units):
-        return int(time_in_units * ticks_per_beat)  # scale factor if needed
+    # seconds → ticks conversion
+    def seconds_to_ticks(t):
+        return int(t * ticks_per_beat * 1_000_000 / tempo)
 
-    # Sort by start time just to be safe
+    # Sort by start time
     notes_sorted = sorted(notes, key=lambda x: x[0])
 
     last_tick = 0
 
-    for (start, dur, pitch, velocity) in notes_sorted:
+    for (start_sec, dur_sec, pitch, velocity) in notes_sorted:
         pitch = int(pitch)
         velocity = int(velocity)
 
-        start_tick = to_ticks(start)
-        duration_tick = to_ticks(dur)
+        start_tick = seconds_to_ticks(start_sec)
+        dur_tick = seconds_to_ticks(dur_sec)
 
-        # delta time = time since last event
+        # delta time relative to previous event
         delta = max(0, start_tick - last_tick)
 
         # Note on
         track.append(Message('note_on', note=pitch, velocity=velocity, time=delta))
 
         # Note off
-        track.append(Message('note_off', note=pitch, velocity=0, time=duration_tick))
+        track.append(Message('note_off', note=pitch, velocity=0, time=dur_tick))
 
-        last_tick = start_tick + duration_tick
+        last_tick = start_tick + dur_tick
 
     midi.save(output_path)
     print(f"Saved MIDI to {output_path}")
@@ -112,7 +111,7 @@ def f(v, c):
     return v//c*c
 
 def f2(v, c):
-    return round(v / c) * c
+    return (v / c).round() * c
 
 def process_last_logits(pairs, device='cuda'):
     # angle of each pair (1,16)
@@ -142,11 +141,11 @@ def process_last_logits(pairs, device='cuda'):
     pos14 = angles[14] * 64
     pos15 = angles[15] * 128
 
-    feature0 = f(pos3, 8) + f(pos2, 1) + f(pos1, 0.25) + pos0
-    feature1 = f(pos7, 8) + f(pos6, 1) + f(pos5, 0.25) + pos4
-    feature2 = f(pos11, 64) + f(pos10, 16) + f(pos9, 4) + pos8
-    feature3 = f(pos15, 64) + f(pos14, 16) + f(pos13, 4) + pos12
-    next_pos = torch.stack([feature0, feature1, feature2, feature3]).to(device)
+    feature0 = f2(pos3, 8) + f2(pos2, 1) + f2(pos1, 0.25) + pos0
+    feature1 = f2(pos7, 8) + f2(pos6, 1) + f2(pos5, 0.25) + pos4
+    feature2 = f2(pos11, 64) + f2(pos10, 16) + f2(pos9, 4) + pos8
+    feature3 = f2(pos15, 64) + f2(pos14, 16) + f2(pos13, 4) + pos12
+    next_pos = torch.stack([feature0, feature1, feature2.round(), feature3.round()]).to(device)
     next_pos = next_pos.unsqueeze(0).unsqueeze(0)
     return next_pos
 
@@ -170,65 +169,23 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
     print(batch['position_tensors'].shape)
     print(batch['labels'].shape)
     model.eval()
-    with torch.no_grad():
-        out = model(
-            input_ids=batch['input_ids'][0:1, :],
-            attention_mask=batch['attention_mask'][0:1, :],
-            position_tensors=batch['position_tensors'][0:1, :,:],
-        )
-    att = model.model.model.layers[0].self_attn._attn_out
-    print("att shape:", att.shape)
-    be1 = model.model.model.layers[0].self_attn._debug_before_proj
-    hid1 = model.model.model.layers[0].self_attn._debug_first_hidden
-    q = model.model.model.layers[0].self_attn._q
-    k = model.model.model.layers[0].self_attn._k
-    v = model.model.model.layers[0].self_attn._v
-    # aw = model.model.model.layers[0].self_attn._test_attn_w
 
-    with torch.no_grad():
-        L = 1
-        # --- RUN MODEL ---
-        out = model(
-            input_ids=batch['input_ids'][0:1, 0:L],
-            attention_mask=batch['attention_mask'][0:1, 0:L],
-            position_tensors=batch['position_tensors'][0:1, 0:L,:],
-        )
+    generated = batch['position_tensors'][0:1, 0:1,:]
+    for i in range(total_length):
+        with torch.no_grad():
+            out = model(
+                input_ids=None,
+                position_tensors=generated,
+            )
+            next_pos = process_last_logits(out.logits[0,i,:,:])
+            time = generated[0, -1, 0]
+            next_pos[0, 0, 0] += time
+            print(next_pos[0, 0, :])
+            print(batch['position_tensors'][0, i+1, :])
+            print("----------")
+            generated = torch.cat([generated, next_pos], dim=1)
 
-    att2 = model.model.model.layers[0].self_attn._attn_out
-    print("att shape:", att2.shape)
-    be2 = model.model.model.layers[0].self_attn._debug_before_proj
-    hid2 = model.model.model.layers[0].self_attn._debug_first_hidden
-    q2 = model.model.model.layers[0].self_attn._q
-    k2 = model.model.model.layers[0].self_attn._k
-    v2 = model.model.model.layers[0].self_attn._v
-    # aw2 = model.model.model.layers[0].self_attn._test_attn_w
-
-    q_diff = (q - q2).abs().max().item()
-    k_diff = (k - k2).abs().max().item()
-    v_diff = (v - v2).abs().max().item()
-
-    # print("\n===== attention weights =====")
-    # print(aw)
-    # print(aw2)
-
-    print("\n===== Q/K/V DIFFS =====")
-    print(f"max |Q_full - Q_masked| = {q_diff}")
-    print(f"max |K_full - K_masked| = {k_diff}")
-    print(f"max |V_full - V_masked| = {v_diff}")
-
-    diff = (att2 - att).abs().max()
-    print("max diff attn batch 0 seq 0:", diff.item())
-
-    diff = (be1 - be2).abs().max()
-    print("max diff before projection batch 0 seq 0:", diff.item())
-
-    diff = (hid1 - hid2).abs().max()
-    print("max diff hidden batch 0 seq 0:", diff.item())
-
-    print(process_last_logits(out.logits[0,0,:,:]))
-    print(batch['labels'][0,0,:])
-
-    return None
+    return generated[0]
 
 
 def main():
@@ -270,7 +227,7 @@ def main():
     generated_positions = generate_music(model, batch, total_length=args.length, device=args.device)
 
     # Convert to MIDI
-    # positions_to_midi(generated_positions, args.output)
+    positions_to_midi(generated_positions, args.output)
 
     print(f"Music generation complete! Check {args.output}")
 
