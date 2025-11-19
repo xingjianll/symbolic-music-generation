@@ -227,7 +227,7 @@ def main():
     generated_positions = generate_music(model, batch, total_length=args.length, device=args.device)
 
     # Convert to MIDI
-    positions_to_midi(generated_positions, args.output)
+    notes_to_midi(generated_positions.cpu().numpy(), args.output)
 
     print(f"Music generation complete! Check {args.output}")
 
