@@ -24,7 +24,7 @@ from typing import Optional, Union
 
 import torch
 from torch import nn
-
+import wandb
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.activations import get_activation
 
@@ -631,6 +631,12 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                 # angular similarity between corresponding 2D pairs
                 cos_sim = (pred * target).sum(dim=-1)
                 loss = (1 - cos_sim).mean()
+                wandb.log({
+                    "loss/start": (1 - cos_sim[:,0:4]).mean(),
+                    "loss/duration": (1 - cos_sim[:,4:8]).mean(),
+                    "loss/pitch": (1 - cos_sim[:,8:12]).mean(),
+                    "loss/velocity": (1 - cos_sim[:,12:16]).mean(),
+                })
 
                 if torch.rand(1).item() < 0.1:
                     print(f"loss: {loss.item():.3f}")
