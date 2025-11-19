@@ -313,7 +313,7 @@ def main():
     print(f"Found {len(all_files)} MIDI files")
 
     # Split into train/val
-    train_files, val_files = train_test_split(all_files, test_size=0.05, random_state=42)
+    train_files, val_files = train_test_split(all_files, test_size=0.02, random_state=42)
     print(f"Train: {len(train_files)}, Val: {len(val_files)}")
 
     # Create datasets (no tokenizer needed)
@@ -321,7 +321,7 @@ def main():
     train_dataset = MidiDataset4DStreaming(train_files, max_seq_len=MAX_SEQ_LEN)
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4D(val_files, max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4DStreaming(val_files, max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
