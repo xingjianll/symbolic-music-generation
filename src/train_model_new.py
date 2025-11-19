@@ -20,29 +20,29 @@ BATCH_SIZE = 32
 MAX_SEQ_LEN = CONTEXT_SIZE
 
 
-def _create_position_tensors(notes, score: ScoreSecond) -> torch.Tensor:
+def _create_position_tensors(notes, file_offset: float = 0) -> torch.Tensor:
     """Create 4D position tensors [start_time, duration, pitch, velocity]."""
     positions = []
 
     # BOS token: start_time=0, duration=0, pitch=0, velocity=0
-    positions.append([0.0, 0.0, 0, 0])
+    positions.append([file_offset, 0.0, 0, 0])
 
     # Process each note
     for note in notes:
-        start_time = float(note.start)
-        end_time = float(note.end)
-        duration = end_time - start_time
+        start = float(note.start) + file_offset
+        end = float(note.end) + file_offset
+        duration = end - start
         pitch = int(note.pitch)
         velocity = int(note.velocity)
 
-        positions.append([start_time, duration, pitch, velocity])
+        positions.append([start, duration, pitch, velocity])
 
     # EOS token: start_time = last note end time, duration=0, pitch=1, velocity=0
-    if notes:
-        last_end_time = float(notes[-1].end)
-    else:
-        last_end_time = 0.0
-    positions.append([last_end_time, 0.0, 1, 0])
+    # if notes:
+    #     last_end_time = float(notes[-1].end)
+    # else:
+    #     last_end_time = 0.0
+    # positions.append([last_end_time, 0.0, 1, 0])
 
     return torch.tensor(positions, dtype=torch.float32)
 
@@ -65,51 +65,39 @@ class MidiDataset4D(Dataset):
 
         print(f"Created {len(self.chunks)} chunks for training")
 
-    def _load_and_concatenate_files(self, file_list: List[Path]):
+    def _load_and_concatenate_files(self, file_list: List[Path], global_offset = 0.0):
         """Load all MIDI files and concatenate into one big sequence."""
         all_tensors = []
-
         for file_path in file_list:
             try:
-                # Load MIDI file using symusic
                 score = symusic.Score.from_file(str(file_path))
-
-                # Use preprocessing functions to clean up the score (in tick format)
                 merge_score_tracks(score)
-
-                # Convert to seconds after preprocessing
                 score = score.to("second")
 
-                # Extract notes from the merged track
                 if not score.tracks or len(score.tracks[0].notes) == 0:
                     continue
 
                 track = score.tracks[0]
-                all_notes = list(track.notes)
-
-                # Skip very short pieces
-                if len(all_notes) < 5:
+                notes = list(track.notes)
+                notes.sort(key=lambda x: x.start)
+                if len(notes) < 5:
                     continue
 
-                # Sort notes by start time
-                all_notes.sort(key=lambda x: x.start)
+                # create positions using global offset
+                tens = _create_position_tensors(notes, global_offset)
+                all_tensors.append(tens)
 
-                # Create 4D position tensors [start_time, duration, pitch, velocity]
-                position_tensors = _create_position_tensors(all_notes, score)
-
-                # Add this piece to the concatenated sequence
-                all_tensors.append(position_tensors)
+                # advance offset to end of this file
+                global_offset = float(notes[-1].end) + global_offset
 
             except Exception as e:
                 print(f"Failed to process {file_path}: {e}")
                 continue
 
-        # Concatenate all pieces
         if all_tensors:
-            concatenated = torch.cat(all_tensors, dim=0)
-            return concatenated
+            return torch.cat(all_tensors, dim=0)
         else:
-            return torch.tensor([], dtype=torch.float32).reshape(0, 4)
+            return torch.zeros((0,4), dtype=torch.float32)
 
     def _create_chunks(self, all_position_tensors):
         """Split concatenated sequence into fixed-size chunks."""
@@ -120,6 +108,12 @@ class MidiDataset4D(Dataset):
             print(i // self.max_seq_len)
             end_idx = min(i + self.max_seq_len, total_len)
             chunk = all_position_tensors[i:end_idx]
+
+            # Normalize first start_time to 0
+            if chunk.shape[0] > 0:
+                shift = chunk[0, 0].item()
+                chunk[:, 0] -= shift
+
             original_len = chunk.shape[0]
 
             # Create attention mask (1 for real tokens, 0 for padding)
@@ -178,7 +172,7 @@ class MidiDataset4DStreaming(MidiDataset4D):
         # Load first 100 files
         print("Loading first 100 files into memory...")
         initial_files = files[:100]
-        self.current_sequence = self._load_and_concatenate_files(initial_files)
+        self.current_sequence = self._load_and_concatenate_files(initial_files, 0)
         self.file_idx = 100
 
         # Calculate total estimated chunks for __len__
@@ -211,7 +205,7 @@ class MidiDataset4DStreaming(MidiDataset4D):
         total_estimated = int(len(self.files) * avg_chunks_per_file)
         return max(total_estimated, 1)
 
-    def _fetch_next_files(self) -> torch.Tensor:
+    def _fetch_next_files(self, global_offset) -> torch.Tensor:
         """Fetch next 2 files and add to current sequence."""
         if self.file_idx >= len(self.files):
             return torch.tensor([], dtype=torch.float32).reshape(0, 4)
@@ -220,7 +214,7 @@ class MidiDataset4DStreaming(MidiDataset4D):
         next_files = self.files[self.file_idx:end_idx]
         self.file_idx = end_idx
 
-        return self._load_and_concatenate_files(next_files)
+        return self._load_and_concatenate_files(next_files, global_offset)
 
     def __len__(self):
         return self.estimated_total_chunks
@@ -228,7 +222,11 @@ class MidiDataset4DStreaming(MidiDataset4D):
     def __getitem__(self, idx):
         # Check if we need more data
         while self.current_sequence.shape[0] < self.max_seq_len:
-            new_data = self._fetch_next_files()
+            if self.current_sequence.shape[0] == 0:
+                offset = 0
+            else:
+                offset = self.current_sequence[-1, 0].item() + self.current_sequence[-1, 1].item()
+            new_data = self._fetch_next_files(offset)
             if new_data.shape[0] == 0:
                 break  # No more files
             self.current_sequence = torch.cat([self.current_sequence, new_data], dim=0)
@@ -247,27 +245,19 @@ class MidiDataset4DStreaming(MidiDataset4D):
             self.current_sequence = self.current_sequence[chunk_end:]
             self.total_chunks_served += 1
 
+        if self.current_sequence.shape[0] > 0:
+            shift = self.current_sequence[0, 0].item()
+            self.current_sequence[:, 0] -= shift
+
         # Create attention mask
         attention_mask = torch.ones(self.max_seq_len, dtype=torch.long)
 
-        # Only pad if this is truly the last chunk of the epoch
-        is_last_chunk = (self.file_idx >= len(self.files) and
-                         self.current_sequence.shape[0] < self.max_seq_len)
-
         if chunk.shape[0] < self.max_seq_len:
-            if is_last_chunk:
-                # Pad only at very end of epoch
-                pad_len = self.max_seq_len - chunk.shape[0]
-                last_time = chunk[-1, 0].item() if chunk.shape[0] > 0 else 0.0
-                pad_tensor = torch.tensor([last_time, 0.0, 2, 0]).repeat(pad_len, 1)
-                chunk = torch.cat([chunk, pad_tensor], dim=0)
-                attention_mask[original_len:] = 0
-            else:
-                # Don't pad, just return shorter chunk and adjust mask
-                temp_chunk = torch.zeros(self.max_seq_len, 4)
-                temp_chunk[:chunk.shape[0]] = chunk
-                chunk = temp_chunk
-                attention_mask[original_len:] = 0
+            pad_len = self.max_seq_len - chunk.shape[0]
+            last_time = chunk[-1, 0].item() if chunk.shape[0] > 0 else 0.0
+            pad_tensor = torch.tensor([last_time, 0.0, 2, 0]).repeat(pad_len, 1)
+            chunk = torch.cat([chunk, pad_tensor], dim=0)
+            attention_mask[original_len:] = 0
 
         # Create input_ids and labels
         input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
