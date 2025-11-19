@@ -121,30 +121,22 @@ def process_last_logits(pairs, device='cuda'):
     # Convert angles → positions
     # ----------------------------
     angles = (angles / torch.pi).clamp(0, 1)
-    pos0 = angles[0] * 0.25
-    pos1 = angles[1] * 1
-    pos2 = angles[2] * 8
-    pos3 = angles[3] * 64
+    pos0 = angles[0] * 1
+    pos1 = angles[1] * 32
 
-    pos4 = angles[4] * 0.25
-    pos5 = angles[5] * 1
-    pos6 = angles[6] * 8
-    pos7 = angles[7] * 64
+    pos2 = angles[2] * 1
+    pos3 = angles[3] * 32
 
-    pos8 = angles[8] * 4
-    pos9 = angles[9] * 16
-    pos10 = angles[10] * 64
-    pos11 = angles[11] * 128
+    pos4 = angles[4] * 12
+    pos5 = angles[5] * 128
 
-    pos12 = angles[12] * 4
-    pos13 = angles[13] * 16
-    pos14 = angles[14] * 64
-    pos15 = angles[15] * 128
+    pos6 = angles[6] * 12
+    pos7 = angles[7] * 128
 
-    feature0 = f2(pos3, 8) + f2(pos2, 1) + f2(pos1, 0.25) + pos0
-    feature1 = f2(pos7, 8) + f2(pos6, 1) + f2(pos5, 0.25) + pos4
-    feature2 = f2(pos11, 64) + f2(pos10, 16) + f2(pos9, 4) + pos8
-    feature3 = f2(pos15, 64) + f2(pos14, 16) + f2(pos13, 4) + pos12
+    feature0 = f2(pos1, 1) + pos0
+    feature1 = f2(pos3, 1) + pos2
+    feature2 = f2(pos5, 12) + pos4
+    feature3 = f2(pos7, 12) + pos6
     next_pos = torch.stack([feature0, feature1, feature2.round(), feature3.round()]).to(device)
     next_pos = next_pos.unsqueeze(0).unsqueeze(0)
     return next_pos
@@ -181,7 +173,6 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
             time = generated[0, -1, 0]
             next_pos[0, 0, 0] += time
             print(next_pos[0, 0, :])
-            print(batch['position_tensors'][0, i+1, :])
             print("----------")
             generated = torch.cat([generated, next_pos], dim=1)
 
@@ -227,7 +218,7 @@ def main():
     generated_positions = generate_music(model, batch, total_length=args.length, device=args.device)
 
     # Convert to MIDI
-    positions_to_midi(generated_positions, args.output)
+    notes_to_midi(generated_positions.cpu().numpy(), args.output)
 
     print(f"Music generation complete! Check {args.output}")
 

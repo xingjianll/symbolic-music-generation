@@ -318,10 +318,10 @@ def main():
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4DStreaming(train_files, max_seq_len=MAX_SEQ_LEN)
+    train_dataset = MidiDataset4DStreaming(train_files[:1], max_seq_len=MAX_SEQ_LEN)
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4D(val_files, max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4D(train_files[:1], max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -369,7 +369,7 @@ def main():
     print("here20")
 
     # Create model
-    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=3e-4, warmup_steps=500)
+    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=5e-4, warmup_steps=100)
     print("here30")
     # Create trainer
     trainer = pl.Trainer(
