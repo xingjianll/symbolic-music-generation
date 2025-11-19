@@ -22,6 +22,7 @@
 from collections.abc import Callable
 from typing import Optional, Union
 
+import wandb
 import torch
 from torch import nn
 
@@ -113,20 +114,22 @@ def _compute_encoding(position_tensors: torch.Tensor) -> torch.Tensor:
     for d in range(4):
         pos_d = position_tensors[:, :, d:d + 1]  # (B, S, 1)
 
-        if d <= 1:
-            angle0 = torch.pi * ((pos_d % 0.25) / 0.25)
-            angle1 = torch.pi * (f(pos_d % 1, 0.25) / 1)
-            angle2 = torch.pi * (f(pos_d % 8, 1) / 8)
-            angle3 = torch.pi * (f(pos_d, 8) / 64)
-        else:
-            angle0 = torch.pi * ((pos_d % 4) / 4)
-            angle1 = torch.pi * (f(pos_d % 16, 4) / 16)
-            angle2 = torch.pi * (f(pos_d % 64, 16) / 64)
-            angle3 = torch.pi * (f(pos_d, 64) / 128)
+        if d == 0:
+            angle0 = torch.pi * ((pos_d % 1) / 1)
+            angle1 = torch.pi * (f(pos_d, 1) / 32)
+        elif d == 1:
+            angle0 = torch.pi * ((pos_d % 1) / 1)
+            angle1 = torch.pi * (f(pos_d, 1) / 32)
+        elif d == 2:
+            angle0 = torch.pi * ((pos_d % 12) / 12)
+            angle1 = torch.pi * (f(pos_d, 12) / 128)
+        elif d == 3:
+            angle0 = torch.pi * ((pos_d % 12) / 12)
+            angle1 = torch.pi * (f(pos_d, 12) / 128)
 
-        angles.extend([angle0, angle1, angle2, angle3])
+        angles.extend([angle0, angle1])
 
-    # (B, S, 16)
+    # (B, S, 8)
     angles = torch.cat(angles, dim=-1)
 
     # Compute cos and sin
@@ -383,7 +386,12 @@ class Qwen3Model(Qwen3PreTrainedModel):
         self.config = config
 
         # Single learnable vector for vocab_size=1 case
-        self.embed_vector = nn.Parameter(torch.randn(config.hidden_size))
+        pattern = torch.arange(config.hidden_size) % 2
+        # pattern will be [0,1,0,1,...], so flip if you want [1,0,1,0,...]
+        pattern = 1 - pattern  # now = [1,0,1,0,...]
+
+        # Register as non-trainable buffer
+        self.register_buffer("embed_vector", pattern.float())
         self.layers = nn.ModuleList(
             [Qwen3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
@@ -510,7 +518,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # Create frequency bands - for 4D positions, we use head_dim/8 unique frequencies
         # Each frequency will be used for a pair of dimensions (2D rotation)
         # Applied to all 4 position dimensions gives us head_dim/8 * 2 * 4 = head_dim
-        freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / head_dim))
+        num_pairs = head_dim // 8         # total RoPE pairs per axis
+        nope_size = 4
+        rotary_pairs = num_pairs - nope_size   # number of rotating pairs
+        freq_bands = 1.0 / (theta ** (torch.arange(0, rotary_pairs*2, 2, device=device).float() / head_dim))
+        freq_bands = torch.cat([freq_bands, torch.zeros(nope_size, device=device)], dim=-1)
 
         frequencies = []
 
@@ -545,7 +557,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         # LM head that outputs 4D positions directly
-        self.lm_head = nn.Linear(config.hidden_size, 4*2*4, bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, 8*2, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -610,7 +622,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         # Apply pairwise normalization to ensure unit vectors (as RoPE preserves norms)
         # Reshape to pairs: (batch, seq, 12) -> (batch, seq, 6, 2)
         batch_size, seq_len, _ = outputs_new.shape
-        pairs = outputs_new.view(batch_size, seq_len, 4*4, 2)
+        pairs = outputs_new.view(batch_size, seq_len, 8, 2)
 
         # Normalize each pair to unit vectors
         pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
@@ -631,6 +643,16 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                 # angular similarity between corresponding 2D pairs
                 cos_sim = (pred * target).sum(dim=-1)
                 loss = (1 - cos_sim).mean()
+                wandb.log({
+                    "loss/s_0": (1 - cos_sim[:,0]).mean(),
+                    "loss/s_1": (1 - cos_sim[:,1]).mean(),
+                    "loss/d_0": (1 - cos_sim[:,2]).mean(),
+                    "loss/d_1": (1 - cos_sim[:,3]).mean(),
+                    "loss/p_0": (1 - cos_sim[:,4]).mean(),
+                    "loss/p_1": (1 - cos_sim[:,5]).mean(),
+                    "loss/v_0": (1 - cos_sim[:,6]).mean(),
+                    "loss/v_1": (1 - cos_sim[:,7]).mean(),
+                })
 
                 if torch.rand(1).item() < 0.1:
                     print(f"loss: {loss.item():.3f}")
