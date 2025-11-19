@@ -114,17 +114,16 @@ def _compute_encoding(position_tensors: torch.Tensor) -> torch.Tensor:
         pos_d = position_tensors[:, :, d:d + 1]  # (B, S, 1)
 
         if d <= 1:
-            angle0 = torch.pi * ((pos_d % 0.25) / 0.25)
-            angle1 = torch.pi * (f(pos_d % 1, 0.25) / 1)
-            angle2 = torch.pi * (f(pos_d % 8, 1) / 8)
-            angle3 = torch.pi * (f(pos_d, 8) / 64)
-        else:
-            angle0 = torch.pi * ((pos_d % 4) / 4)
-            angle1 = torch.pi * (f(pos_d % 16, 4) / 16)
-            angle2 = torch.pi * (f(pos_d % 64, 16) / 64)
-            angle3 = torch.pi * (f(pos_d, 64) / 128)
-
-        angles.extend([angle0, angle1, angle2, angle3])
+            angle0 = torch.pi * ((pos_d % 1) / 1)
+            angle1 = torch.pi * (f(pos_d, 1) / 16)
+            angles.extend([angle0, angle1])
+        elif d == 2:
+            angle0 = torch.pi * ((pos_d % 12) / 12)
+            angle1 = torch.pi * (f(pos_d, 12) / 128)
+            angles.extend([angle0, angle1])
+        elif d == 3:
+            angle0 = torch.pi * (pos_d / 128)
+            angles.extend([angle0])
 
     # (B, S, 16)
     angles = torch.cat(angles, dim=-1)
@@ -286,7 +285,7 @@ class Qwen3Attention(nn.Module):
             key_states,
             value_states,
             attention_mask,
-            dropout=0.1,
+            dropout=0,
             scaling=self.scaling,
             **kwargs,
         )
@@ -545,7 +544,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         # LM head that outputs 4D positions directly
-        self.lm_head = nn.Linear(config.hidden_size, 4*2*4, bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, 7*2, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -610,7 +609,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         # Apply pairwise normalization to ensure unit vectors (as RoPE preserves norms)
         # Reshape to pairs: (batch, seq, 12) -> (batch, seq, 6, 2)
         batch_size, seq_len, _ = outputs_new.shape
-        pairs = outputs_new.view(batch_size, seq_len, 4*4, 2)
+        pairs = outputs_new.view(batch_size, seq_len, 7, 2)
 
         # Normalize each pair to unit vectors
         pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
@@ -632,10 +631,10 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                 cos_sim = (pred * target).sum(dim=-1)
                 loss = (1 - cos_sim).mean()
                 wandb.log({
-                    "loss/start": (1 - cos_sim[:,0:4]).mean(),
-                    "loss/duration": (1 - cos_sim[:,4:8]).mean(),
-                    "loss/pitch": (1 - cos_sim[:,8:12]).mean(),
-                    "loss/velocity": (1 - cos_sim[:,12:16]).mean(),
+                    "loss/start": (1 - cos_sim[:,0:2]).mean(),
+                    "loss/duration": (1 - cos_sim[:,2:4]).mean(),
+                    "loss/pitch": (1 - cos_sim[:,4:6]).mean(),
+                    "loss/velocity": (1 - cos_sim[:,6:7]).mean(),
                 })
 
                 if torch.rand(1).item() < 0.1:

@@ -15,8 +15,8 @@ from sklearn.model_selection import train_test_split
 from src.utils import CONTEXT_SIZE, merge_score_tracks, handle_tempos, handle_key_sigs, handle_time_sigs
 from src.model.model import MidiQwenNew
 
-EPOCHS = 24
-BATCH_SIZE = 32
+EPOCHS = 512
+BATCH_SIZE = 1
 MAX_SEQ_LEN = CONTEXT_SIZE
 
 
@@ -296,7 +296,7 @@ def custom_collate_fn(batch):
 def main():
     # Setup paths
     project_dir = Path(__file__).resolve().parents[1]
-    data_dir = project_dir / "data" / "aria-midi-v1-deduped-ext" / "data"
+    data_dir = project_dir / "data" / "aria-midi-v1-unique-ext" / "data"
 
     # Get all MIDI files
     all_files = list(sorted(data_dir.glob("**/*.mid")))
@@ -308,10 +308,10 @@ def main():
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4DStreaming(train_files, max_seq_len=MAX_SEQ_LEN)
+    train_dataset = MidiDataset4DStreaming(train_files[:1], max_seq_len=MAX_SEQ_LEN)
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4DStreaming(val_files, max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4DStreaming(train_files[:1], max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
