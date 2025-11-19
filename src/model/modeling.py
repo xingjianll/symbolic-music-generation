@@ -510,7 +510,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # Create frequency bands - for 4D positions, we use head_dim/8 unique frequencies
         # Each frequency will be used for a pair of dimensions (2D rotation)
         # Applied to all 4 position dimensions gives us head_dim/8 * 2 * 4 = head_dim
-        freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / head_dim))
+        freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / (head_dim//4)))
 
         frequencies = []
 
