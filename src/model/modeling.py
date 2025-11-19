@@ -544,7 +544,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         # LM head that outputs 4D positions directly
-        self.lm_head = nn.Linear(config.hidden_size, 7*2, bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, 3 + 128, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -604,47 +604,64 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        outputs_new = self.lm_head(hidden_states[:, slice_indices, :])
+        logits = self.lm_head(hidden_states[:, slice_indices, :])
 
-        # Apply pairwise normalization to ensure unit vectors (as RoPE preserves norms)
-        # Reshape to pairs: (batch, seq, 12) -> (batch, seq, 6, 2)
-        batch_size, seq_len, _ = outputs_new.shape
-        pairs = outputs_new.view(batch_size, seq_len, 7, 2)
-
-        # Normalize each pair to unit vectors
-        pair_norms = torch.norm(pairs, dim=-1, keepdim=True)
-        pred = pairs / (pair_norms + 1e-8)  # Add small epsilon for numerical stability
-        out = pred
+        pred_dt       = logits[..., 0]
+        pred_duration = logits[..., 1]
+        pred_velocity = logits[..., 2]
+        pred_pitch_logits = logits[..., 3:]  # 128-class softmax
 
         loss = None
         if labels is not None:
-            # Compute rotational encoding of target values
-            target = _compute_encoding(labels) # (batch, seq, 16, 2)
+            mu_dt = 0.1226
+            std_dt = (0.0568 ** 0.5)   # ≈ 0.2656
 
-            # Mask out padded positions (where labels == -100)
-            mask = (labels != -100).all(dim=-1)  # (batch*seq,)
-            if mask.any():
-                pred = pred[mask]  # (N, 16, 2)
-                target = target[mask]  # (N, 16, 2)
+            mu_dur = 0.6158
+            std_dur = (0.8221 ** 0.5)  # ≈ 0.8703
 
-                # angular similarity between corresponding 2D pairs
-                cos_sim = (pred * target).sum(dim=-1)
-                loss = (1 - cos_sim).mean()
-                wandb.log({
-                    "loss/start": (1 - cos_sim[:,0:2]).mean(),
-                    "loss/duration": (1 - cos_sim[:,2:4]).mean(),
-                    "loss/pitch": (1 - cos_sim[:,4:6]).mean(),
-                    "loss/velocity": (1 - cos_sim[:,6:7]).mean(),
-                })
+            mu_vel = 64.6879
+            std_vel = (314.4664 ** 0.5)  # ≈ 18.57
 
-                if torch.rand(1).item() < 0.1:
-                    print(f"loss: {loss.item():.3f}")
-            else:
-                loss = torch.tensor(0.0, device=outputs_new.device)
+            raw_dt       = labels[..., 0]
+            raw_duration = labels[..., 1]
+            raw_pitch    = labels[..., 2].long()
+            raw_velocity = labels[..., 3]
+
+            mask = (raw_pitch != -100)
+            # Mask padded positions
+            raw_dt       = raw_dt[mask]
+            raw_duration = raw_duration[mask]
+            raw_pitch    = raw_pitch[mask]
+            raw_velocity = raw_velocity[mask]
+
+            pred_dt       = pred_dt[mask]
+            pred_duration = pred_duration[mask]
+            pred_velocity = pred_velocity[mask]
+            pred_pitch_logits = pred_pitch_logits[mask]
+
+            labels_dt       = (raw_dt       - mu_dt)  / std_dt
+            labels_duration = (raw_duration - mu_dur) / std_dur
+            labels_velocity = (raw_velocity - mu_vel) / std_vel
+            labels_pitch    = raw_pitch
+
+            # Individual loss components
+            loss_dt       = F.mse_loss(pred_dt, labels_dt)
+            loss_duration = F.mse_loss(pred_duration, labels_duration)
+            loss_velocity = F.mse_loss(pred_velocity, labels_velocity)
+            loss_pitch    = F.cross_entropy(pred_pitch_logits, labels_pitch)
+            wandb.log({
+                "loss/start": loss_dt.mean(),
+                "loss/duration": loss_duration.mean(),
+                "loss/pitch": loss_pitch.mean(),
+                "loss/velocity": loss_velocity.mean(),
+            })
+
+            # Final multitask loss (weights optional)
+            loss = loss_dt + loss_duration + loss_velocity + 0.5*loss_pitch
 
         return CausalLMOutputWithPast(
             loss=loss,
-            logits=out,
+            logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
