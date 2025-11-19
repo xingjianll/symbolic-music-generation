@@ -202,7 +202,7 @@ def main():
 
     # Generate music
     project_dir = Path(__file__).resolve().parents[0]
-    data_dir = project_dir / "data" / "aria-midi-v1-unique-ext" / "data"
+    data_dir = project_dir / "data" / "aria-midi-v1-deduped-ext" / "data"
 
     # Get all MIDI files
     all_files = list(sorted(data_dir.glob("**/*.mid")))
