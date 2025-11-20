@@ -252,24 +252,29 @@ class MidiDataset4DStreaming(MidiDataset4D):
         # Create attention mask
         attention_mask = torch.ones(self.max_seq_len, dtype=torch.long)
 
-        if chunk.shape[0] < self.max_seq_len:
-            pad_len = self.max_seq_len - chunk.shape[0]
-            last_time = chunk[-1, 0].item() if chunk.shape[0] > 0 else 0.0
-            pad_tensor = torch.tensor([last_time, 0.0, 2, 0]).repeat(pad_len, 1)
-            chunk = torch.cat([chunk, pad_tensor], dim=0)
-            attention_mask[original_len:] = 0
-
-        # Create input_ids and labels
+        # Create input_ids
         input_ids = torch.zeros(self.max_seq_len, dtype=torch.long)
 
-        # Labels are next 4D positions directly
-        labels = chunk[1:].clone()  # Next position prediction
-        last_position = chunk[-1:].clone()
-        labels = torch.cat([labels, last_position], dim=0)
-        labels[0:, 0] = labels[0:, 0] - chunk[0:, 0]
-
+        # Create pads
         if original_len < self.max_seq_len:
+            pad_len = self.max_seq_len - original_len
+            last_time = chunk[-1, 0].item() if original_len > 0 else 0.0
+            pad_tensor = torch.tensor([last_time, 0.0, 2, 0]).repeat(pad_len, 1)
+            chunk = torch.cat([chunk, pad_tensor], dim=0)
+
+        # Create labels
+        labels = chunk[1:].clone()
+        last_position = torch.tensor([-100, -100, -100, -100]).unsqueeze(0)
+        labels = torch.cat([labels, last_position], dim=0)
+        labels[0:, 0] = labels[0:, 0] - chunk[0:, 0] # Next delta time
+
+        # mask labels
+        if original_len < self.max_seq_len:
+            attention_mask[original_len:] = 0
             labels[original_len:] = -100
+
+        mask_bos = (labels[:, 2] == 0)
+        labels[mask_bos] = -100
 
         return {
             'input_ids': input_ids,

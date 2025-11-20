@@ -436,11 +436,26 @@ class Qwen3Model(Qwen3PreTrainedModel):
             num_classes=128
         ).float()
 
+        mu_dt = 0.1226
+        std_dt = (0.0568 ** 0.5)   # ≈ 0.2656
+
+        mu_dur = 0.6158
+        std_dur = (0.8221 ** 0.5)  # ≈ 0.8703
+
+        mu_vel = 64.6879
+        std_vel = (314.4664 ** 0.5)  # ≈ 18.57
+
+        # normalize continuous fields
+        dt_norm       = (dt       - mu_dt)  / std_dt
+        duration_norm = (duration - mu_dur) / std_dur
+        velocity_norm = (velocity - mu_vel) / std_vel
+
+        # keep pitch_one_hot as is
         delta_position_tensors = torch.cat([
-            dt.unsqueeze(-1),             # (B, S, 1)
-            duration.unsqueeze(-1),       # (B, S, 1)
-            velocity.unsqueeze(-1),       # (B, S, 1)
-            pitch_one_hot,                # (B, S, 128)
+            dt_norm.unsqueeze(-1),
+            duration_norm.unsqueeze(-1),
+            velocity_norm.unsqueeze(-1),
+            pitch_one_hot,
         ], dim=-1)
 
         # project
@@ -537,13 +552,15 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # Create frequency bands - for 4D positions, we use head_dim/8 unique frequencies
         # Each frequency will be used for a pair of dimensions (2D rotation)
         # Applied to all 4 position dimensions gives us head_dim/8 * 2 * 4 = head_dim
-        freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim // 4, 2, device=device).float() / (head_dim//4)))
+        freq_bands = 1.0 / (theta ** (torch.arange(0, head_dim, 2, device=device).float() / (head_dim)))
 
         frequencies = []
 
-        for d in range(4):  # For each of the 4 position dimensions
+        for d in range(1):  # For each of the 4 position dimensions
             # Get positions for this dimension: (batch_size, seq_len, 1)
-            pos_d = all_positions[:, :, d:d + 1]
+            # pos_d = all_positions[:, :, d:d + 1]
+            pos_d = torch.arange(seq_len).unsqueeze(0).unsqueeze(-1).to(device)       # shape (1, seq_len, 1)
+            pos_d.expand(batch_size, seq_len, 1)
 
             # Apply frequency bands to this position dimension
             dim_frequencies = pos_d * freq_bands  # (batch_size, seq_len, num_freqs)
@@ -676,6 +693,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             loss_duration = F.mse_loss(pred_duration, labels_duration)
             loss_velocity = F.mse_loss(pred_velocity, labels_velocity)
             loss_pitch    = F.cross_entropy(pred_pitch_logits, labels_pitch)
+
             wandb.log({
                 "loss/start": loss_dt.mean(),
                 "loss/duration": loss_duration.mean(),
