@@ -672,6 +672,18 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             raw_velocity = labels[..., 3]
 
             mask = (raw_pitch != -100)
+
+            if not mask.any():
+                # safe zero loss tensor
+                loss = (pred_dt.sum() * 0.0)
+                return CausalLMOutputWithPast(
+                    loss=loss,
+                    logits=logits,
+                    past_key_values=outputs.past_key_values,
+                    hidden_states=outputs.hidden_states,
+                    attentions=outputs.attentions,
+                )
+
             # Mask padded positions
             raw_dt       = raw_dt[mask]
             raw_duration = raw_duration[mask]

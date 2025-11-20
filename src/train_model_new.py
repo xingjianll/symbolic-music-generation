@@ -16,7 +16,7 @@ from src.utils import CONTEXT_SIZE, merge_score_tracks, handle_tempos, handle_ke
 from src.model.model import MidiQwenNew
 
 EPOCHS = 72
-BATCH_SIZE = 32
+BATCH_SIZE = 40
 MAX_SEQ_LEN = CONTEXT_SIZE
 
 
@@ -235,15 +235,15 @@ class MidiDataset4DStreaming(MidiDataset4D):
         if self.current_sequence.shape[0] == 0:
             # No data available, return dummy chunk
             chunk = torch.zeros(self.max_seq_len, 4)
-            original_len = 0
         else:
             chunk_end = min(self.max_seq_len, self.current_sequence.shape[0])
             chunk = self.current_sequence[:chunk_end]
-            original_len = chunk.shape[0]
 
             # Remove served chunk from sequence
             self.current_sequence = self.current_sequence[chunk_end:]
             self.total_chunks_served += 1
+
+        original_len = chunk.shape[0]
 
         if self.current_sequence.shape[0] > 0:
             shift = self.current_sequence[0, 0].item()
@@ -325,7 +325,7 @@ def main():
         batch_size=BATCH_SIZE,
         shuffle=False,
         collate_fn=custom_collate_fn,
-        num_workers=8
+        num_workers=0
     )
 
     val_loader = DataLoader(
@@ -333,7 +333,7 @@ def main():
         batch_size=BATCH_SIZE,
         shuffle=False,
         collate_fn=custom_collate_fn,
-        num_workers=8
+        num_workers=0
     )
     print("123")
 
@@ -374,8 +374,6 @@ def main():
         gradient_clip_val=5.0,
         log_every_n_steps=4,
         accelerator="gpu",
-        devices=4,
-        strategy="ddp",
         callbacks=[checkpoint_callback],
         val_check_interval=0.1,
         precision="bf16-mixed",
