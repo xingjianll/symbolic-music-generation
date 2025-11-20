@@ -188,18 +188,18 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
     print(batch['labels'].shape)
     model.eval()
 
-    generated = batch['position_tensors'][0:1, 0:1,:]
+    generated = batch['position_tensors'][0:1, 0:50,:]
     for i in range(total_length):
         with torch.no_grad():
             out = model(
                 input_ids=None,
                 position_tensors=generated,
             )
-            next_pos = process_last_logits2(out.logits[0,i,:])
+            next_pos = process_last_logits2(out.logits[0,-1,:])
             time = generated[0, -1, 0]
             next_pos[0, 0, 0] += time
-            print(next_pos[0, 0, :])
-            print(batch['position_tensors'][0, i+1, :])
+            # print(out.logits[0,:,:])
+            # print(batch['position_tensors'][0, i+1, :])
             print("----------")
             generated = torch.cat([generated, next_pos], dim=1)
 

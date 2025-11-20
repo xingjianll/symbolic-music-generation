@@ -16,7 +16,7 @@ from src.utils import CONTEXT_SIZE, merge_score_tracks, handle_tempos, handle_ke
 from src.model.model import MidiQwenNew
 
 EPOCHS = 72
-BATCH_SIZE = 40
+BATCH_SIZE = 32
 MAX_SEQ_LEN = CONTEXT_SIZE
 
 
@@ -180,6 +180,15 @@ class MidiDataset4DStreaming(MidiDataset4D):
 
         print(f"Loaded {len(initial_files)} files, estimated {self.estimated_total_chunks} total chunks")
 
+    def reset(self):
+        self.file_idx = 0
+        self.current_sequence = torch.tensor([], dtype=torch.float32).reshape(0, 4)
+        self.total_chunks_served = 0
+        # Reload first N files again (e.g., 100)
+        initial_files = self.files[:100]
+        self.current_sequence = self._load_and_concatenate_files(initial_files, 0)
+        self.file_idx = 100
+
     def _estimate_total_chunks(self) -> int:
         """Estimate total chunks across all files."""
         # Sample first 50 files to estimate average chunk count
@@ -220,6 +229,8 @@ class MidiDataset4DStreaming(MidiDataset4D):
         return self.estimated_total_chunks
 
     def __getitem__(self, idx):
+        if idx == 0:
+            self.reset()
         # Check if we need more data
         while self.current_sequence.shape[0] < self.max_seq_len:
             if self.current_sequence.shape[0] == 0:

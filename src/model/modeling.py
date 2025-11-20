@@ -226,7 +226,7 @@ class Qwen3Attention(nn.Module):
         self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = self.head_dim ** -0.5
-        self.attention_dropout = 0.1
+        self.attention_dropout = 0
         self.is_causal = True
 
         self.q_proj = nn.Linear(
