@@ -140,6 +140,33 @@ def process_last_logits(pairs, device='cuda'):
     next_pos = next_pos.unsqueeze(0).unsqueeze(0)
     return next_pos
 
+
+def process_last_logits2(logits, device='cuda'):
+    pred_dt       = logits[..., 0]
+    pred_duration = logits[..., 1]
+    pred_velocity = logits[..., 2]
+    pred_pitch_logits = logits[..., 3:]  # shape (..., 128)
+
+    # Retrieve predicted pitch class (0–127)
+    pred_pitch = pred_pitch_logits.argmax(dim=-1)
+
+    mu_dt   = 0.1226
+    std_dt  = (0.0568 ** 0.5)      # ≈ 0.2383
+    mu_dur  = 0.6158
+    std_dur = (0.8221 ** 0.5)      # ≈ 0.9078
+    mu_vel  = 64.6879
+    std_vel = (314.4664 ** 0.5)    # ≈ 17.73
+
+    # Un-normalize the scalar regression outputs
+    pred_dt       = pred_dt       * std_dt + mu_dt
+    pred_duration = pred_duration * std_dur + mu_dur
+    pred_velocity = pred_velocity * std_vel + mu_vel
+
+    next_pos = torch.stack([pred_dt, pred_duration, pred_pitch, pred_velocity.round()]).to(device)
+    next_pos = next_pos.unsqueeze(0).unsqueeze(0)
+    return next_pos
+
+
 from src.model.modeling import _compute_encoding
 @torch.no_grad()
 def generate_music(model, batch, total_length: int = 200, device='cuda'):
@@ -168,7 +195,7 @@ def generate_music(model, batch, total_length: int = 200, device='cuda'):
                 input_ids=None,
                 position_tensors=generated,
             )
-            next_pos = process_last_logits(out.logits[0,i,:,:])
+            next_pos = process_last_logits2(out.logits[0,i,:])
             time = generated[0, -1, 0]
             next_pos[0, 0, 0] += time
             print(next_pos[0, 0, :])
