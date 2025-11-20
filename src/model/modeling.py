@@ -263,7 +263,7 @@ class Qwen3Attention(nn.Module):
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-        value_states = apply_rotary_pos_emb_1(value_states, cos, sin)
+        # value_states = apply_rotary_pos_emb_1(value_states, cos, sin)
 
         if past_key_values is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
@@ -293,9 +293,9 @@ class Qwen3Attention(nn.Module):
         #     self._attn_out = attn_output[0, 0].detach().cpu().clone()
         #     print("attnout shape:", attn_output.shape)
 
-        attn_output = attn_output.permute(0, 2, 1, 3).contiguous() # need for rope
-        attn_output = apply_rotary_pos_emb_T(attn_output, cos, sin)
-        attn_output = attn_output.permute(0, 2, 1, 3).contiguous()
+        # attn_output = attn_output.permute(0, 2, 1, 3).contiguous() # need for rope
+        # attn_output = apply_rotary_pos_emb_T(attn_output, cos, sin)
+        # attn_output = attn_output.permute(0, 2, 1, 3).contiguous()
         attn_output = attn_output.reshape(*input_shape, -1)
 
         attn_output = self.o_proj(attn_output)
@@ -382,7 +382,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
         self.config = config
 
         # Single learnable vector for vocab_size=1 case
-        self.embed_vector = nn.Parameter(torch.randn(config.hidden_size))
+        # self.embed_vector = nn.Parameter(torch.randn(config.hidden_size))
+        self.position_proj = nn.Linear(3+128, config.hidden_size)
+
         self.layers = nn.ModuleList(
             [Qwen3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
@@ -413,10 +415,36 @@ class Qwen3Model(Qwen3PreTrainedModel):
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
-        if inputs_embeds is None:
-            # For vocab_size=1, expand the single embed vector to match batch and sequence dimensions
-            batch_size, seq_len = input_ids.shape
-            inputs_embeds = self.embed_vector.unsqueeze(0).unsqueeze(0).expand(batch_size, seq_len, -1)
+        # if inputs_embeds is None:
+        #     # For vocab_size=1, expand the single embed vector to match batch and sequence dimensions
+        #     batch_size, seq_len = input_ids.shape
+        #     inputs_embeds = self.embed_vector.unsqueeze(0).unsqueeze(0).expand(batch_size, seq_len, -1)
+        abs_time = position_tensors[..., 0]      # (B, S)
+
+        # compute delta time separately
+        dt = abs_time.clone()
+        dt[..., 1:] = abs_time[..., 1:] - abs_time[..., :-1]
+        dt[..., 0] = 0.0
+
+        # create new tensor without modifying original
+        duration = position_tensors[..., 1]      # (B, S)
+        pitch     = position_tensors[..., 2].long()  # (B, S) integers
+        velocity  = position_tensors[..., 3]      # (B, S)
+
+        pitch_one_hot = F.one_hot(
+            torch.clamp(pitch, min=0),  # ensure padded -100 doesn't crash
+            num_classes=128
+        ).float()
+
+        delta_position_tensors = torch.cat([
+            dt.unsqueeze(-1),             # (B, S, 1)
+            duration.unsqueeze(-1),       # (B, S, 1)
+            velocity.unsqueeze(-1),       # (B, S, 1)
+            pitch_one_hot,                # (B, S, 128)
+        ], dim=-1)
+
+        # project
+        inputs_embeds = self.position_proj(delta_position_tensors)
 
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache(config=self.config)
@@ -544,10 +572,6 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         # LM head that outputs 4D positions directly
-        self.lm_head = nn.Linear(config.hidden_size, 3 + 128, bias=False)
-
-        # Initialize weights and apply final processing
-        self.post_init()
 
     @can_return_tuple
     @auto_docstring
@@ -604,7 +628,10 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
+        logits = F.linear(
+            hidden_states[:, slice_indices, :],    # (B, S, H)
+            self.model.position_proj.weight.T      # (131, H)
+        )
 
         pred_dt       = logits[..., 0]
         pred_duration = logits[..., 1]
