@@ -285,7 +285,7 @@ class Qwen3Attention(nn.Module):
             key_states,
             value_states,
             attention_mask,
-            dropout=0,
+            dropout=0.1,
             scaling=self.scaling,
             **kwargs,
         )

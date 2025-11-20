@@ -15,8 +15,8 @@ from sklearn.model_selection import train_test_split
 from src.utils import CONTEXT_SIZE, merge_score_tracks, handle_tempos, handle_key_sigs, handle_time_sigs
 from src.model.model import MidiQwenNew
 
-EPOCHS = 512
-BATCH_SIZE = 1
+EPOCHS = 72
+BATCH_SIZE = 32
 MAX_SEQ_LEN = CONTEXT_SIZE
 
 
@@ -301,7 +301,7 @@ def custom_collate_fn(batch):
 def main():
     # Setup paths
     project_dir = Path(__file__).resolve().parents[1]
-    data_dir = project_dir / "data" / "aria-midi-v1-unique-ext" / "data"
+    data_dir = project_dir / "data" / "aria-midi-v1-deduped-ext" / "data"
 
     # Get all MIDI files
     all_files = list(sorted(data_dir.glob("**/*.mid")))
@@ -310,13 +310,14 @@ def main():
     # Split into train/val
     train_files, val_files = train_test_split(all_files, test_size=0.02, random_state=42)
     print(f"Train: {len(train_files)}, Val: {len(val_files)}")
+    print(train_files[:1])
 
     # Create datasets (no tokenizer needed)
     print("Creating train dataset...")
-    train_dataset = MidiDataset4DStreaming(train_files[:1], max_seq_len=MAX_SEQ_LEN)
+    train_dataset = MidiDataset4DStreaming(train_files, max_seq_len=MAX_SEQ_LEN)
 
     print("Creating val dataset...")
-    val_dataset = MidiDataset4DStreaming(train_files[:1], max_seq_len=MAX_SEQ_LEN)
+    val_dataset = MidiDataset4DStreaming(val_files, max_seq_len=MAX_SEQ_LEN)
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -364,7 +365,7 @@ def main():
     print("here20")
 
     # Create model
-    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=3e-4, warmup_steps=500)
+    model = MidiQwenNew(dummy_tokenizer, train_loader, lr=3e-4, warmup_steps=1000)
     print("here30")
     # Create trainer
     trainer = pl.Trainer(
@@ -372,7 +373,9 @@ def main():
         logger=wandb_logger,
         gradient_clip_val=5.0,
         log_every_n_steps=4,
-        accelerator="auto",
+        accelerator="gpu",
+        devices=4,
+        strategy="ddp",
         callbacks=[checkpoint_callback],
         val_check_interval=0.1,
         precision="bf16-mixed",
