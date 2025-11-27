@@ -106,7 +106,7 @@ class MelodyHarmonizationDataset(Dataset):
     def __getitem__(self, idx):
         return self.sequences[idx]
 
-def collate_fn(batch, pad_token_id):
+def seq_2_seq_collate_fn(batch, pad_token_id):
     """Custom collate function for melody harmonization with loss masking"""
     input_ids = []
     melody_lengths = []
@@ -128,7 +128,7 @@ def collate_fn(batch, pad_token_id):
 
     # Mask the melody part + separator token (set to -100 so they're ignored in loss)
     for i, melody_length in enumerate(melody_lengths):
-        labels[i, :melody_length] = -100
+        labels[i, :melody_length+1] = -100
 
     return {
         "input_ids": padded_input_ids,
@@ -188,7 +188,7 @@ class StyleDataset(Dataset):
                 print(f"Failed to process {midi_file.name}: {e}")
                 continue
 
-        print(f"Loaded {len(self.sequences)} Chopin sequences.")
+        print(f"Loaded {len(self.sequences)} sequences.")
 
     def __len__(self):
         return len(self.sequences)
@@ -250,7 +250,7 @@ def train_seq2seq():
 
     # Create collate function with pad_token_id
     def train_collate_fn(batch):
-        return collate_fn(batch, tokenizer.pad_token_id)
+        return seq_2_seq_collate_fn(batch, tokenizer.pad_token_id)
 
     train_loader = DataLoader(
         train_dataset,
