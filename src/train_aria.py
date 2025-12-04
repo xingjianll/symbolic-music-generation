@@ -62,8 +62,7 @@ class InfillDataset(Dataset):
 
                 # Random middle segment for infill
                 total = min(len(notes), 512)
-                gap_len = int(total * np.random.uniform(0.1, 0.4))
-                start_idx = np.random.randint(10, total - gap_len - 10)
+                start_idx = np.random.randint(10, total - 10)
 
                 prefix_notes = notes[:start_idx]
                 suffix_notes = notes[start_idx:]
@@ -262,13 +261,13 @@ class StyleDataset(Dataset):
                 midi_token_ids = self.tokenizer._tokenizer.encode(midi_tokens)
 
                 # Optional style token
-                if self.use_style_token:
-                    style_token_id = self.tokenizer._tokenizer.encode("<style:chopin>")
-                    midi_token_ids = style_token_id + midi_token_ids
+                # if self.use_style_token:
+                #     style_token_id = self.tokenizer._tokenizer.encode("<style:ani>")
+                #     midi_token_ids = style_token_id + midi_token_ids
 
                 # ✅ Truncate instead of skipping
                 if len(midi_token_ids) > self.max_seq_len:
-                    midi_token_ids = midi_token_ids[:self.max_seq_len]
+                    midi_token_ids = midi_token_ids[:self.max_seq_len-1]+[midi_token_ids[-1]]
 
                 # Store only meaningful sequences
                 if len(midi_token_ids) > 50:
@@ -390,7 +389,7 @@ def train_seq2seq():
     )
 
     model.load_state_dict(hf_model.state_dict(), strict=False)
-    model.to_lora()
+    # model.to_lora()
 
     # Enable gradient checkpointing to save memory
     # model.model.gradient_checkpointing_enable()
@@ -404,7 +403,7 @@ def train_seq2seq():
         log_every_n_steps=1,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=20,
+        val_check_interval=100,
     )
 
     trainer.fit(model, train_loader, val_loader)
@@ -426,7 +425,7 @@ def train_infill():
     project_dir = Path(__file__).resolve().parents[1]
 
     # Load paired datasets - melody files and harmony files
-    melody_train_files = sorted((project_dir / 'data' / 'aria-midi-v1-unique-ext').glob("**/*.mid"))[:3000]
+    melody_train_files = sorted((project_dir / 'data' / 'aria-midi-v1-unique-ext').glob("**/*.mid"))
     # harmony_train_files = sorted((project_dir / 'data' / 'wikifonia_midi').glob("**/*.mid"))
 
     # Split into train/val (80/20 split)
@@ -451,7 +450,7 @@ def train_infill():
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=8,
+        batch_size=16,
         collate_fn=train_collate_fn,
         num_workers=10,
         shuffle=True
@@ -466,7 +465,7 @@ def train_infill():
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=8,
+        batch_size=16,
         collate_fn=train_collate_fn,
         num_workers=10
     )
@@ -507,7 +506,7 @@ def train_infill():
         log_every_n_steps=1,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=20,
+        val_check_interval=100,
     )
 
     trainer.fit(model, train_loader, val_loader)
@@ -529,15 +528,15 @@ def train_style():
     project_dir = Path(__file__).resolve().parents[1]
 
     # Chopin dataset
-    chopin_files = sorted((project_dir / 'data' / 'chopin').glob("**/*.mid"))
-
+    chopin_files_train = sorted((project_dir / 'data' /'single_track_combined_train').glob("**/*.mid"))
+    chopin_files_val = sorted((project_dir / 'data' /'single_track_combined_val').glob("**/*.mid"))
     train_dataset = StyleDataset(
-        midi_files=chopin_files[:int(0.8 * len(chopin_files))],
+        midi_files=chopin_files_train,
         tokenizer=tokenizer,
         max_seq_len=CONTEXT_SIZE
     )
     val_dataset = StyleDataset(
-        midi_files=chopin_files[int(0.8 * len(chopin_files)):],
+        midi_files=chopin_files_val,
         tokenizer=tokenizer,
         max_seq_len=CONTEXT_SIZE
     )
@@ -562,10 +561,10 @@ def train_style():
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=project_dir / "checkpoints",
-        filename="aria-style-{epoch:02d}-{val_loss:.4f}",
-        monitor='train_loss',
+        filename="aria-style-2-{epoch:02d}-{val_loss:.4f}",
+        monitor='val_loss',
         every_n_epochs=1,
-        save_top_k=8,
+        save_top_k=5,
         save_last=True,
     )
 
