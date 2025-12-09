@@ -65,14 +65,14 @@ def test_infill(model_path):
     # Load your LoRA-wrapped model
     print("Loading trained infill model...")
     midiaria = MidiAria(tokenizer, None)
-    midiaria.to_lora()
+    # midiaria.to_lora()
     ckpt = torch.load(model_path, map_location="cpu")
     raw = ckpt["state_dict"]
 
     # Strip lightning prefix
-    clean = {k.replace("model.", "", 1): v for k, v in raw.items()}
+    # clean = {k.replace("model.", "", 1): v for k, v in raw.items()}
 
-    midiaria.model.load_state_dict(clean, strict=False)
+    midiaria.load_state_dict(raw)
     midiaria.eval().to(device)
 
     # Pick one random training MIDI
@@ -95,14 +95,21 @@ def test_infill(model_path):
     prefix_midi = dump_temp(prefix_notes)
     suffix_midi = dump_temp(suffix_notes)
 
-    # Tokenize
+# Tokenize
     prefix_ids = tokenizer._tokenizer.encode(
         tokenizer.tokenize(MidiDict.from_midi(prefix_midi),
                            add_eos_token=True,
                            add_dim_token=True)
     )
+    melody_score = symusic.Score.from_file(str('/workspace/symbolic-music-generation/src/321.mid'))
+    merge_score_tracks(melody_score)
+
+    # Set all tracks to piano (program 0)
+    for track in melody_score.tracks:
+        track.program = 0
+    melody_score.dump_midi("temp.mid")
     suffix_ids = tokenizer._tokenizer.encode(
-        tokenizer.tokenize(MidiDict.from_midi(suffix_midi),
+        tokenizer.tokenize(MidiDict.from_midi('temp.mid'),
                            add_eos_token=True,
                            add_dim_token=True)
     )
@@ -120,7 +127,7 @@ def test_infill(model_path):
     print("Generating completion...")
 
     continuation = midiaria.model.generate(
-        torch.tensor([suffix_ids + prefix_ids[:64]], device='cuda'),
+        torch.tensor([suffix_ids], device='cuda'),
         max_length=len(suffix_ids)+64+100,
         do_sample=True,
         temperature=0.97,
@@ -139,6 +146,6 @@ def test_infill(model_path):
 
 if __name__ == "__main__":
     # path to one of your checkpoints
-    model_ckpt = "/workspace/symbolic-music-generation/checkpoints/aria-infill-epoch=11-val_loss=2.6428.ckpt"
+    model_ckpt = "/workspace/symbolic-music-generation/checkpoints/aria-harmony-epoch=00-val_loss=0.1606.ckpt"
 
     test_infill(model_ckpt)

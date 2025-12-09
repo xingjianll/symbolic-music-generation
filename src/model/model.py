@@ -183,7 +183,7 @@ import torch
 
 
 class MidiAria(pl.LightningModule):
-    def __init__(self, tokenizer, dataloader, lr=2e-4, warmup_steps=10):
+    def __init__(self, tokenizer, dataloader, lr=1e-5, warmup_steps=100):
         super().__init__()
         # self.save_hyperparameters()
 
@@ -236,15 +236,15 @@ class MidiAria(pl.LightningModule):
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         state_dict = checkpoint["state_dict"]
 
-        model_pos_emb = self.model.model.tok_embeddings.weight  # (vocab_size, hidden_dim)
-        old_pos_emb = state_dict.get("model.model.tok_embeddings.weight")
-
-        if old_pos_emb is not None and old_pos_emb.shape[0] < model_pos_emb.shape[0]:
-            print(f"Expanding embeddings: {old_pos_emb.shape[0]} → {model_pos_emb.shape[0]}")
-            model_pos_emb.data[:old_pos_emb.shape[0]] = old_pos_emb
-            state_dict["model.model.tok_embeddings.weight"] = model_pos_emb
-        else:
-            print("Loading embeddings without resizing.")
+        # model_pos_emb = self.model.model.tok_embeddings.weight  # (vocab_size, hidden_dim)
+        # old_pos_emb = state_dict.get("model.model.tok_embeddings.weight")
+        #
+        # if old_pos_emb is not None and old_pos_emb.shape[0] < model_pos_emb.shape[0]:
+        #     print(f"Expanding embeddings: {old_pos_emb.shape[0]} → {model_pos_emb.shape[0]}")
+        #     model_pos_emb.data[:old_pos_emb.shape[0]] = old_pos_emb
+        #     state_dict["model.model.tok_embeddings.weight"] = model_pos_emb
+        # else:
+        #     print("Loading embeddings without resizing.")
 
         self.load_state_dict(state_dict, strict=False)
 
