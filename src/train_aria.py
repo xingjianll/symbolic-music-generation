@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 import os
 from typing import List, Dict, Any
@@ -44,6 +45,14 @@ class MelodyHarmonizationDataset(Dataset):
                 harmony_score = symusic.Score.from_file(str(harmony_file))
 
                 # Merge tracks using preprocessing function and set to piano
+                import random
+                value = random.uniform(0.8, 1.3)
+                for tempo in melody_score.tempos:
+                    tempo.qpm *= value
+
+                for tempo in harmony_score.tempos:
+                    tempo.qpm *= value
+
                 merge_score_tracks(melody_score)
                 merge_score_tracks(harmony_score)
 
@@ -52,6 +61,28 @@ class MelodyHarmonizationDataset(Dataset):
                     track.program = 0
                 for track in harmony_score.tracks:
                     track.program = 0
+
+                # -------------------------------------------------------
+                # NEW: Extract first 10 notes *directly from scores*
+                # -------------------------------------------------------
+                def first_n_pitches_from_score(score, n=10):
+                    if len(score.tracks) == 0:
+                        return []
+
+                    track = score.tracks[0]  # merged track
+                    notes = list(track.notes)
+                    notes.sort(key=lambda x: x.start)
+
+                    return [note.pitch for note in notes[:n]]
+
+                mel_pitches = first_n_pitches_from_score(melody_score, 10)
+                harm_pitches = first_n_pitches_from_score(harmony_score, 10)
+
+                # If both have 10 notes and all are identical → skip
+                if len(mel_pitches) == 10 and len(harm_pitches) == 10:
+                    if mel_pitches == harm_pitches:
+                        print(f"Skipping {melody_file.name}: first 10 notes identical.")
+                        continue
 
                 # Convert to MidiDict for tokenization
                 # Save to temporary files first (symusic → MIDI → MidiDict)
@@ -88,12 +119,10 @@ class MelodyHarmonizationDataset(Dataset):
                     print(f"Sequence too long ({len(combined_sequence)} tokens), skipping {melody_file.name}")
                     continue
 
-                if len(combined_sequence) > 100:  # Keep meaningful sequences
-                    # Store the combined sequence and the melody length for masking
-                    self.sequences.append({
-                        'input_ids': combined_sequence,
-                        'melody_length': len(melody_token_ids)  # No separator token
-                    })
+                self.sequences.append({
+                    'input_ids': combined_sequence,
+                    'melody_length': len(melody_token_ids)  # No separator token
+                })
 
             except Exception as e:
                 print(f"Failed to process pair {melody_file.name}: {e}")
@@ -212,141 +241,6 @@ def style_collate_fn(batch, pad_token_id):
     }
 
 
-class InfillDataset(Dataset):
-    def __init__(self, midi_files: List[Path], tokenizer, max_seq_len: int = 8192):
-        self.midi_files = midi_files
-        self.tokenizer = tokenizer
-        self.max_seq_len = max_seq_len
-        self.sequences = []
-        self._load()
-
-    def _dump_track_to_temp(self, notes: List[symusic.NoteTick], program: int = 0):
-        """Create a temporary MIDI file containing only the provided notes."""
-        import tempfile, os
-
-        score = symusic.Score()
-        track = symusic.Track()
-        track.program = program
-        track.notes.extend(notes)
-        score.tracks.append(track)
-
-        tmp = tempfile.NamedTemporaryFile(suffix=".mid", delete=False)
-        score.dump_midi(tmp.name)
-        return tmp.name
-
-    def _load(self):
-        import tempfile, os
-
-        for midi_file in self.midi_files:
-            try:
-                score = symusic.Score.from_file(str(midi_file))
-                merge_score_tracks(score)
-                track = score.tracks[0]
-
-                # Extract & sort notes
-                notes = list(track.notes)
-                notes.sort(key=lambda n: n.start)
-                if len(notes) < 50:
-                    continue
-
-                # Random middle segment for infill
-                total = len(notes)
-                gap_len = int(total * np.random.uniform(0.1, 0.3))
-                start_idx = np.random.randint(10, total - gap_len - 10)
-
-                prefix_notes = notes[:start_idx]
-                middle_notes = notes[start_idx:start_idx + gap_len]
-                suffix_notes = notes[start_idx + gap_len:]
-
-                if min(len(prefix_notes), len(middle_notes), len(suffix_notes)) < 5:
-                    continue
-
-                # Convert to temp MIDI files
-                prefix_midi = self._dump_track_to_temp(prefix_notes)
-                middle_midi = self._dump_track_to_temp(middle_notes)
-                suffix_midi = self._dump_track_to_temp(suffix_notes)
-
-                # Tokenize each part separately
-                prefix_ids = self.tokenizer._tokenizer.encode(
-                    self.tokenizer.tokenize(MidiDict.from_midi(prefix_midi),
-                                            add_eos_token=True, add_dim_token=True)
-                )
-                middle_ids = self.tokenizer._tokenizer.encode(
-                    self.tokenizer.tokenize(MidiDict.from_midi(middle_midi),
-                                            add_eos_token=True, add_dim_token=True)
-                )
-                suffix_ids = self.tokenizer._tokenizer.encode(
-                    self.tokenizer.tokenize(MidiDict.from_midi(suffix_midi),
-                                            add_eos_token=True, add_dim_token=True)
-                )
-
-                # Clean up
-                os.unlink(prefix_midi)
-                os.unlink(middle_midi)
-                os.unlink(suffix_midi)
-
-                # FINAL INPUT ORDER:
-                #   prefix + suffix + middle
-                input_ids = prefix_ids + suffix_ids + middle_ids
-
-                if len(input_ids) > self.max_seq_len:
-                    continue
-                if len(middle_ids) < 30:
-                    continue
-
-                self.sequences.append({
-                    "input_ids": input_ids,
-                    "prefix_len": len(prefix_ids),
-                    "suffix_len": len(suffix_ids),
-                    "middle_len": len(middle_ids),
-                })
-
-            except Exception as e:
-                print(f"Failed processing {midi_file.name}: {e}")
-
-        print(f"Loaded {len(self.sequences)} infill examples.")
-
-    def __len__(self):
-        return len(self.sequences)
-
-    def __getitem__(self, idx):
-        return self.sequences[idx]
-
-
-def infill_collate_fn(batch, pad_token_id):
-    input_ids = []
-    prefix_lens = []
-    suffix_lens = []
-    middle_lens = []
-
-    for item in batch:
-        ids = torch.tensor(item["input_ids"], dtype=torch.long)
-        input_ids.append(ids)
-        prefix_lens.append(item["prefix_len"])
-        suffix_lens.append(item["suffix_len"])
-        middle_lens.append(item["middle_len"])
-
-    padded_inputs = torch.nn.utils.rnn.pad_sequence(
-        input_ids,
-        batch_first=True,
-        padding_value=pad_token_id
-    )
-
-    labels = padded_inputs.clone()
-
-    for i, (p_len, s_len, m_len) in enumerate(zip(prefix_lens, suffix_lens, middle_lens)):
-        # MASK prefix
-        labels[i, :p_len] = -100
-        # MASK suffix
-        labels[i, p_len:p_len+s_len] = -100
-        # middle at end is left unmasked (train on it)
-
-    return {
-        "input_ids": padded_inputs,
-        "labels": labels
-    }
-
-
 def train_seq2seq():
     # tokenizer = get_tokenizer(version="v2")
 
@@ -364,8 +258,15 @@ def train_seq2seq():
     melody_train_files = sorted((project_dir / 'data' / 'wikifonia_midi_no_chord').glob("**/*.mid"))
     harmony_train_files = sorted((project_dir / 'data' / 'wikifonia_midi').glob("**/*.mid"))
 
+    print("melody_train_files (first 10):")
+    for f in melody_train_files[:10]:
+        print(f)
+
+    print("\nharmony_train_files (first 10):")
+    for f in harmony_train_files[:10]:
+        print(f)
     # Split into train/val (80/20 split)
-    split_idx = int(len(melody_train_files) * 0.8)
+    split_idx = int(len(melody_train_files) * 0.95)
 
     melody_train = melody_train_files[:split_idx]
     harmony_train = harmony_train_files[:split_idx]
@@ -376,15 +277,16 @@ def train_seq2seq():
     print(f"Training pairs: {len(melody_train)}, Validation pairs: {len(melody_val)}")
 
     # --- TRAIN DATASET ---
-    train_dataset = InfillDataset(
-        midi_files=melody_train,
+    train_dataset = MelodyHarmonizationDataset(
+        melody_files=melody_train,
+        harmony_files=harmony_train,
         tokenizer=tokenizer,
         max_seq_len=CONTEXT_SIZE
     )
 
     # Create collate function with pad_token_id
     def train_collate_fn(batch):
-        return infill_collate_fn(batch, tokenizer.pad_token_id)
+        return collate_fn(batch, tokenizer.pad_token_id)
 
     train_loader = DataLoader(
         train_dataset,
@@ -395,8 +297,9 @@ def train_seq2seq():
     )
 
     # --- VAL DATASET ---
-    val_dataset = InfillDataset(
-        midi_files=melody_train,
+    val_dataset = MelodyHarmonizationDataset(
+        melody_files=melody_val,
+        harmony_files=harmony_val,
         tokenizer=tokenizer,
         max_seq_len=CONTEXT_SIZE
     )
@@ -410,12 +313,14 @@ def train_seq2seq():
 
     # === WANDB LOGGER ===
     wandb_logger = WandbLogger(project="symbolic-music-generation", log_model=True)
+    steps_per_epoch = len(train_loader)
+    steps_per_half_epoch = steps_per_epoch // 4
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=project_dir / "checkpoints",
-        filename="aria-infill-{epoch:02d}-{val_loss:.4f}",
+        filename="aria-harmony-{epoch:02d}-{val_loss:.4f}",
         monitor='train_loss',
-        every_n_epochs=1,
+        every_n_train_steps=steps_per_half_epoch,
         save_top_k=8,
         save_last=True,
     )
@@ -442,7 +347,7 @@ def train_seq2seq():
         log_every_n_steps=1,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=20,
+        val_check_interval=60,
     )
 
     trainer.fit(model, train_loader, val_loader)
@@ -534,4 +439,4 @@ def train_style():
     print("Done")
 
 if __name__ == "__main__":
-    train_style()
+    train_seq2seq()
