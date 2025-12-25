@@ -16,7 +16,7 @@ from src.utils import CONTEXT_SIZE, merge_score_tracks
 from src.model.model import MidiAria
 import symusic
 
-EPOCHS = 12
+EPOCHS = 6
 
 device = "cuda"
 torch.Tensor.cuda = lambda self, *args, **kwargs: self.to(device)
@@ -45,13 +45,13 @@ class MelodyHarmonizationDataset(Dataset):
                 harmony_score = symusic.Score.from_file(str(harmony_file))
 
                 # Merge tracks using preprocessing function and set to piano
-                import random
-                value = random.uniform(0.8, 1.3)
-                for tempo in melody_score.tempos:
-                    tempo.qpm *= value
-
-                for tempo in harmony_score.tempos:
-                    tempo.qpm *= value
+                # import random
+                # value = random.uniform(0.8, 1.3)
+                # for tempo in melody_score.tempos:
+                #     tempo.qpm *= value
+                #
+                # for tempo in harmony_score.tempos:
+                #     tempo.qpm *= value
 
                 merge_score_tracks(melody_score)
                 merge_score_tracks(harmony_score)
@@ -104,10 +104,10 @@ class MelodyHarmonizationDataset(Dataset):
                     os.unlink(temp_harmony.name)
 
                 # Tokenize both - keep eos and dim tokens for training
-                melody_tokens = self.tokenizer.tokenize(melody_dict, add_eos_token=True, add_dim_token=True)
+                melody_tokens = self.tokenizer.tokenize(melody_dict, add_eos_token=True, add_dim_token=False)
                 melody_token_ids = self.tokenizer._tokenizer.encode(melody_tokens)
 
-                harmony_tokens = self.tokenizer.tokenize(harmony_dict, add_eos_token=True, add_dim_token=True)
+                harmony_tokens = self.tokenizer.tokenize(harmony_dict, add_eos_token=True, add_dim_token=False)
                 harmony_token_ids = self.tokenizer._tokenizer.encode(harmony_tokens)
 
                 # Create combined sequence: melody + harmony (no separator needed)
@@ -159,9 +159,15 @@ def collate_fn(batch, pad_token_id):
     for i, melody_length in enumerate(melody_lengths):
         labels[i, :melody_length] = -100
 
+    # 2. Mask PAD tokens
+    labels[padded_input_ids == pad_token_id] = -100
+
+    attention_mask = (padded_input_ids != pad_token_id).long()
+
     return {
         "input_ids": padded_input_ids,
-        "labels": labels
+        "labels": labels,
+        # "attention_mask": attention_mask,
     }
 
 
@@ -255,24 +261,24 @@ def train_seq2seq():
     project_dir = Path(__file__).resolve().parents[1]
 
     # Load paired datasets - melody files and harmony files
-    melody_train_files = sorted((project_dir / 'data' / 'wikifonia_midi_no_chord').glob("**/*.mid"))
-    harmony_train_files = sorted((project_dir / 'data' / 'wikifonia_midi').glob("**/*.mid"))
+    # melody_train_files = sorted((project_dir / 'data' / 'mel').glob("**/*.mid"))
+    # harmony_train_files = sorted((project_dir / 'data' / 'merged').glob("**/*.mid"))
 
-    print("melody_train_files (first 10):")
-    for f in melody_train_files[:10]:
-        print(f)
+    # print("melody_train_files (first 10):")
+    # for f in melody_train_files[:10]:
+    #     print(f)
+    #
+    # print("\nharmony_train_files (first 10):")
+    # for f in harmony_train_files[:10]:
+    #     print(f)
+    # # Split into train/val (95/5 split)
+    # split_idx = int(len(melody_train_files) * 0.95)
 
-    print("\nharmony_train_files (first 10):")
-    for f in harmony_train_files[:10]:
-        print(f)
-    # Split into train/val (80/20 split)
-    split_idx = int(len(melody_train_files) * 0.95)
+    melody_train = sorted((project_dir / 'data' / 'mel').glob("**/*.mid"))
+    harmony_train = sorted((project_dir / 'data' / 'merged').glob("**/*.mid"))
 
-    melody_train = melody_train_files[:split_idx]
-    harmony_train = harmony_train_files[:split_idx]
-
-    melody_val = melody_train_files[split_idx:]
-    harmony_val = harmony_train_files[split_idx:]
+    melody_val = sorted((project_dir / 'data' / 'mel_val').glob("**/*.mid"))
+    harmony_val = sorted((project_dir / 'data' / 'merged_val').glob("**/*.mid"))
 
     print(f"Training pairs: {len(melody_train)}, Validation pairs: {len(melody_val)}")
 
@@ -321,8 +327,9 @@ def train_seq2seq():
         filename="aria-harmony-{epoch:02d}-{val_loss:.4f}",
         monitor='train_loss',
         every_n_train_steps=steps_per_half_epoch,
-        save_top_k=8,
+        save_top_k=4,
         save_last=True,
+        save_weights_only=True
     )
 
     # === TRAIN ===
@@ -333,7 +340,7 @@ def train_seq2seq():
     )
 
     model.load_state_dict(hf_model.state_dict(), strict=False)
-    model.to_lora()
+    # model.to_lora()
 
     # Enable gradient checkpointing to save memory
     # model.model.gradient_checkpointing_enable()
@@ -347,7 +354,7 @@ def train_seq2seq():
         log_every_n_steps=1,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=60,
+        val_check_interval=20,
     )
 
     trainer.fit(model, train_loader, val_loader)
