@@ -15,12 +15,93 @@ import numpy as np
 from src.utils import CONTEXT_SIZE, merge_score_tracks
 from src.model.model import MidiAria
 import symusic
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 EPOCHS = 6
 
 device = "cuda"
 torch.Tensor.cuda = lambda self, *args, **kwargs: self.to(device)
 
+
+# worker_globals.py (or same file, top-level)
+_worker_tokenizer = None
+_worker_max_seq_len = None
+
+def worker_init(tokenizer_cfg, max_seq_len):
+    global _worker_tokenizer, _worker_max_seq_len
+
+    # Construct tokenizer ONCE per worker
+    _worker_tokenizer = AutoTokenizer.from_pretrained(
+        "loubb/aria-medium-base",
+        trust_remote_code=True,
+        add_eos_token=True,
+        add_dim_token=False
+    )
+    _worker_max_seq_len = max_seq_len
+
+def process_pair(melody_file, harmony_file):
+    global _worker_tokenizer, _worker_max_seq_len
+
+    try:
+        melody_score = symusic.Score.from_file(str(melody_file))
+        harmony_score = symusic.Score.from_file(str(harmony_file))
+
+        merge_score_tracks(melody_score)
+        merge_score_tracks(harmony_score)
+
+        for t in melody_score.tracks:
+            t.program = 0
+        for t in harmony_score.tracks:
+            t.program = 0
+
+        def first_n_pitches(score, n=10):
+            if not score.tracks:
+                return []
+            notes = sorted(score.tracks[0].notes, key=lambda x: x.start)
+            return [n.pitch for n in notes[:n]]
+
+        if first_n_pitches(melody_score) == first_n_pitches(harmony_score):
+            return None
+
+        import tempfile, os
+
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as m1, \
+                tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as m2:
+            melody_score.dump_midi(m1.name)
+            harmony_score.dump_midi(m2.name)
+
+            melody_dict = MidiDict.from_midi(m1.name)
+            harmony_dict = MidiDict.from_midi(m2.name)
+
+        os.unlink(m1.name)
+        os.unlink(m2.name)
+
+        mel_ids = _worker_tokenizer._tokenizer.encode(
+            _worker_tokenizer.tokenize(
+                melody_dict, add_eos_token=True, add_dim_token=False
+            )
+        )
+
+        har_ids = _worker_tokenizer._tokenizer.encode(
+            _worker_tokenizer.tokenize(
+                harmony_dict, add_eos_token=True, add_dim_token=False
+            )
+        )
+
+        combined = mel_ids + har_ids
+        if len(combined) > _worker_max_seq_len:
+            return None
+
+        if len(combined) < 20:
+            return None
+
+        return {
+            "input_ids": combined,
+            "melody_length": len(mel_ids),
+        }
+
+    except Exception as e:
+        return ("error", melody_file.name, str(e))
 
 
 class MelodyHarmonizationDataset(Dataset):
@@ -37,96 +118,38 @@ class MelodyHarmonizationDataset(Dataset):
         # Process all MIDI file pairs and tokenize them
         self._load_and_tokenize_pairs()
 
-    def _load_and_tokenize_pairs(self):
-        for melody_file, harmony_file in zip(self.melody_files, self.harmony_files):
-            try:
-                # Load MIDI files using symusic first, then merge tracks
-                melody_score = symusic.Score.from_file(str(melody_file))
-                harmony_score = symusic.Score.from_file(str(harmony_file))
+    def _load_and_tokenize_pairs(self, num_workers=None):
+        num_workers = num_workers or os.cpu_count()
+        self.sequences = []
 
-                # Merge tracks using preprocessing function and set to piano
-                # import random
-                # value = random.uniform(0.8, 1.3)
-                # for tempo in melody_score.tempos:
-                #     tempo.qpm *= value
-                #
-                # for tempo in harmony_score.tempos:
-                #     tempo.qpm *= value
+        tokenizer_cfg = {}
 
-                merge_score_tracks(melody_score)
-                merge_score_tracks(harmony_score)
+        with ProcessPoolExecutor(
+                max_workers=num_workers,
+                initializer=worker_init,
+                initargs=(tokenizer_cfg, self.max_seq_len),
+        ) as executor:
 
-                # Set all tracks to piano (program 0)
-                for track in melody_score.tracks:
-                    track.program = 0
-                for track in harmony_score.tracks:
-                    track.program = 0
+            futures = [
+                executor.submit(process_pair, m, h)
+                for m, h in zip(self.melody_files, self.harmony_files)
+            ]
+            count = 0
+            for fut in as_completed(futures):
+                print(count)
+                count += 1
+                result = fut.result()
 
-                # -------------------------------------------------------
-                # NEW: Extract first 10 notes *directly from scores*
-                # -------------------------------------------------------
-                def first_n_pitches_from_score(score, n=10):
-                    if len(score.tracks) == 0:
-                        return []
-
-                    track = score.tracks[0]  # merged track
-                    notes = list(track.notes)
-                    notes.sort(key=lambda x: x.start)
-
-                    return [note.pitch for note in notes[:n]]
-
-                mel_pitches = first_n_pitches_from_score(melody_score, 10)
-                harm_pitches = first_n_pitches_from_score(harmony_score, 10)
-
-                # If both have 10 notes and all are identical → skip
-                if len(mel_pitches) == 10 and len(harm_pitches) == 10:
-                    if mel_pitches == harm_pitches:
-                        print(f"Skipping {melody_file.name}: first 10 notes identical.")
-                        continue
-
-                # Convert to MidiDict for tokenization
-                # Save to temporary files first (symusic → MIDI → MidiDict)
-                import tempfile
-                import os
-
-                with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as temp_melody, \
-                     tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as temp_harmony:
-
-                    melody_score.dump_midi(temp_melody.name)
-                    harmony_score.dump_midi(temp_harmony.name)
-
-                    # Load with MidiDict
-                    melody_dict = MidiDict.from_midi(temp_melody.name)
-                    harmony_dict = MidiDict.from_midi(temp_harmony.name)
-
-                    # Clean up temp files
-                    os.unlink(temp_melody.name)
-                    os.unlink(temp_harmony.name)
-
-                # Tokenize both - keep eos and dim tokens for training
-                melody_tokens = self.tokenizer.tokenize(melody_dict, add_eos_token=True, add_dim_token=False)
-                melody_token_ids = self.tokenizer._tokenizer.encode(melody_tokens)
-
-                harmony_tokens = self.tokenizer.tokenize(harmony_dict, add_eos_token=True, add_dim_token=False)
-                harmony_token_ids = self.tokenizer._tokenizer.encode(harmony_tokens)
-
-                # Create combined sequence: melody + harmony (no separator needed)
-                # The natural <E> <S> boundary between sequences provides the separation
-                combined_sequence = melody_token_ids + harmony_token_ids
-
-                # Split into chunks if too long
-                if len(combined_sequence) > self.max_seq_len:
-                    print(f"Sequence too long ({len(combined_sequence)} tokens), skipping {melody_file.name}")
+                if result is None:
                     continue
 
-                self.sequences.append({
-                    'input_ids': combined_sequence,
-                    'melody_length': len(melody_token_ids)  # No separator token
-                })
+                if isinstance(result, tuple) and result[0] == "error":
+                    _, name, err = result
+                    print(f"Failed to process {name}: {err}")
+                    continue
 
-            except Exception as e:
-                print(f"Failed to process pair {melody_file.name}: {e}")
-                continue
+                self.sequences.append(result)
+
         print(f"size of pairs: {len(self.sequences)}")
 
     def __len__(self):
@@ -274,11 +297,11 @@ def train_seq2seq():
     # # Split into train/val (95/5 split)
     # split_idx = int(len(melody_train_files) * 0.95)
 
-    melody_train = sorted((project_dir / 'data' / 'mel').glob("**/*.mid"))
-    harmony_train = sorted((project_dir / 'data' / 'merged').glob("**/*.mid"))
+    melody_train = sorted((project_dir / 'data' / 'new' /  'mel').glob("**/*.mid"))
+    harmony_train = sorted((project_dir / 'data' / 'new' / 'merged').glob("**/*.mid"))
 
-    melody_val = sorted((project_dir / 'data' / 'mel_val').glob("**/*.mid"))
-    harmony_val = sorted((project_dir / 'data' / 'merged_val').glob("**/*.mid"))
+    melody_val = sorted((project_dir / 'data' / 'new' / 'mel_val').glob("**/*.mid"))
+    harmony_val = sorted((project_dir / 'data' / 'new' / 'merged_val').glob("**/*.mid"))
 
     print(f"Training pairs: {len(melody_train)}, Validation pairs: {len(melody_val)}")
 
@@ -320,16 +343,16 @@ def train_seq2seq():
     # === WANDB LOGGER ===
     wandb_logger = WandbLogger(project="symbolic-music-generation", log_model=True)
     steps_per_epoch = len(train_loader)
-    steps_per_half_epoch = steps_per_epoch // 4
+    steps_per_half_epoch = steps_per_epoch // 10
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=project_dir / "checkpoints",
         filename="aria-harmony-{epoch:02d}-{val_loss:.4f}",
-        monitor='train_loss',
-        every_n_train_steps=steps_per_half_epoch,
-        save_top_k=4,
+        monitor="val_loss",
+        mode="min",
+        save_top_k=6,
         save_last=True,
-        save_weights_only=True
+        save_weights_only=True,
     )
 
     # === TRAIN ===
@@ -340,7 +363,7 @@ def train_seq2seq():
     )
 
     model.load_state_dict(hf_model.state_dict(), strict=False)
-    # model.to_lora()
+    model.to_lora()
 
     # Enable gradient checkpointing to save memory
     # model.model.gradient_checkpointing_enable()
@@ -354,7 +377,7 @@ def train_seq2seq():
         log_every_n_steps=1,
         accelerator="auto",
         callbacks=[checkpoint_callback],
-        val_check_interval=20,
+        val_check_interval=300,
     )
 
     trainer.fit(model, train_loader, val_loader)
